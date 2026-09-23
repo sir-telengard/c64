@@ -1,0 +1,114 @@
+@font-face {
+    font-family: 'C64_Pro_Mono';
+    src: url('./Fonts/C64_Pro_Mono-STYLE.ttf') format('truetype');
+}
+
+/* Reset and Basics */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Body Styling */
+body {
+    background-color: #7C71DB; /* Outer border color */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    width: 100vw;
+    font-family: 'C64_Pro_Mono', monospace; /* Retro font */
+}
+
+/* Screen Styling */
+.screen {
+    background-color: #3E32A2; /* Inner screen color */
+    width: calc(100% - 120px); /* Adjust for 60px padding on both sides */
+    height: calc(100% - 120px); /* Adjust for 60px padding on top and bottom */
+    padding: 20px;
+    color: #fff; /* Default text color */
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    border: 5px solid #7C71DB; /* Outer border for the screen */
+    overflow: hidden;
+}
+
+/* Boot Text Styling */
+.boot-text {
+    font-family: 'C64_Pro_Mono', monospace; /* Ensure C64 boot text uses the retro font */
+    font-size: 2rem; /* Font size closer to C64 */
+    line-height: 1.5; /* Adjust line spacing */
+    text-align: center; /* Center-align the boot text */
+    white-space: pre-wrap; /* Allows line breaks to wrap */
+    color: #7C71DB; /* Match the border color */
+}
+
+.boot-text .title-line {
+    margin-bottom: 10px; /* Add spacing below the first line */
+}
+
+/* Input Area Styling */
+.input-area {
+    margin-top: 20px; /* Space between boot text and input area */
+}
+
+/* READY Line Styling */
+.ready-line {
+    font-family: 'C64_Pro_Mono', monospace; /* Ensure consistent font */
+    font-size: 2rem; /* Match the boot text size */
+    line-height: 1; /* Match line spacing */
+    color: #7C71DB; /* Matches the text color */
+    text-align: left; /* Left-align READY. */
+    margin-left: 20px; /* Indent READY. */
+}
+
+/* Cursor Line Styling */
+.cursor-line {
+    font-family: 'C64_Pro_Mono', monospace; /* Ensure consistent font */
+    font-size: 2rem; /* Match the text size */
+    text-align: left; /* Align cursor beneath READY. */
+    color: #7C71DB; /* Matches the text color */
+    margin-left: 20px; /* Indent cursor under "READY." */
+    display: inline;
+}
+
+/* Cursor Styling */
+.cursor {
+    font-family: 'C64_Pro_Mono', monospace; /* Consistent with screen text */
+    font-size: 2rem; /* Same size as text for a block cursor */
+    animation: blink 1s step-end infinite; /* Add blinking effect */
+    color: #7C71DB; /* Matches the text color */
+}
+
+.easter-egg {
+    font-family: 'C64_Pro_Mono', monospace; /* Consistent font */
+    font-size: 2rem; /* Match the boot text size */
+    line-height: 1; /* Match line spacing */
+    color: #7C71DB; /* Custom Easter egg color */
+    margin-left: 20px; /* Align with other lines */
+}
+
+.easter-egg a {
+    color: #c9d487; /* Link color matches Easter egg text */
+    text-decoration: none; /* Remove underline for retro look */
+}
+
+.easter-egg a:hover {
+    text-decoration: underline; /* Add underline on hover for clarity */
+}
+
+.inverse {
+    background-color: #7C71DB; /* Outer border color */
+    color: #FFFFFF; /* Inverted text color */
+    padding: 2px 4px; /* Add padding for better visibility */
+    border-radius: 2px; /* Optional: rounded corners */
+    font-weight: bold; /* Make the text bold for emphasis */
+}
+
+@keyframes blink {
+    50% {
+        opacity: 0;
+    }
+}
