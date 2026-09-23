@@ -9,6 +9,7 @@ let programLines = {}; // Store program lines as key-value pairs
 let variables = {}; // Store BASIC variables
 let programCounter = 0; // Current line being executed
 let running = false; // Program execution state
+let programRunning = false; // Async program loop active (defer READY until done)
 
 // Define color codes
 const colors = {
@@ -69,6 +70,11 @@ class BasicInterpreter {
         
         if (!statement) return;
         
+        // ? shorthand for PRINT
+        if (statement.startsWith('?')) {
+            return this.executePrint(statement.substring(1));
+        }
+
         // PRINT statement
         if (statement.startsWith('PRINT')) {
             return this.executePrint(statement.substring(5));
@@ -150,26 +156,46 @@ class BasicInterpreter {
     executeRun() {
         const lineNumbers = Object.keys(programLines).map(Number).sort((a, b) => a - b);
         running = true;
+        programRunning = true;
         programCounter = 0;
-        
-        try {
-            while (running && programCounter < lineNumbers.length) {
-                const lineNum = lineNumbers[programCounter];
-                const statement = programLines[lineNum];
-                this.executeStatement(statement);
-                programCounter++;
+
+        const step = () => {
+            try {
+                let chunk = 0;
+                while (running && programCounter < lineNumbers.length) {
+                    const lineNum = lineNumbers[programCounter];
+                    const statement = programLines[lineNum];
+                    this.lastLine = lineNum;
+                    // 10 PRINT CHR$(205.5+RND(1)); : GOTO 10 maze easter egg
+                    if (/CHR\$?\(\s*205/.test(statement) && /GOTO/.test(statement)) {
+                        running = false;
+                        programRunning = false;
+                        startMaze();
+                        return;
+                    }
+                    this.executeStatement(statement);
+                    programCounter++;
+                    if (++chunk >= 500) {
+                        setTimeout(step, 0);
+                        return;
+                    }
+                }
+            } catch (error) {
+                this.outputLine(error.message);
             }
-        } catch (error) {
-            this.outputLine(error.message);
-        }
-        
-        running = false;
+            if (programRunning) {
+                running = false;
+                programRunning = false;
+                addReadyPrompt();
+            }
+        };
+        step();
     }
 
     executeNew() {
         programLines = {};
+        variables = {};
         this.variables = {};
-        this.outputLine('');
     }
 
     executeGoto(target) {
@@ -181,7 +207,7 @@ class BasicInterpreter {
             throw new Error(`?UNDEF'D STATEMENT ERROR`);
         }
         
-        programCounter = index;
+        programCounter = index - 1; // -1 because the run loop increments after each statement
     }
 
     isVariable(name) {
@@ -225,13 +251,59 @@ class BasicInterpreter {
         outputLine.className = "ready-line";
         const outputSpan = document.createElement('span');
         outputSpan.style.color = currentTextColor;
-        outputSpan.textContent = text;
+        const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        outputSpan.innerHTML = escaped.replace(/@GENXJAY\.COM/g,
+            '<a href="https://bsky.app/profile/genxjay.com" target="_blank" style="color:#c9d487">@GENXJAY.COM</a>');
         outputLine.appendChild(outputSpan);
         cursorLine.parentNode.insertBefore(outputLine, cursorLine);
+        // Cap scrollback so infinite loops don't grow the DOM forever
+        const lines = cursorLine.parentNode.querySelectorAll('.ready-line, .easter-egg');
+        if (lines.length > 4000) lines[0].remove();
+        cursorLine.scrollIntoView({ block: 'end' });
     }
 }
 
 const basic = new BasicInterpreter();
+
+let directoryLoaded = false; // LOAD"$",8 was issued; next LIST shows the disk directory
+let mazeInterval = null; // 10 PRINT maze animation timer
+
+function glyphSupported(ch) {
+    const ctx = document.createElement('canvas').getContext('2d');
+    ctx.font = '32px C64_Pro_Mono, monospace';
+    const missing = ctx.measureText('￿').width;
+    const w = ctx.measureText(ch).width;
+    return w > 0 && w !== missing;
+}
+
+function startMaze() {
+    const diagA = glyphSupported('╱') ? '╱' : '/';
+    const diagB = glyphSupported('╲') ? '╲' : '\\';
+    let lineDiv = document.createElement('div');
+    lineDiv.className = 'ready-line';
+    cursorLine.parentNode.insertBefore(lineDiv, cursorLine);
+    let col = 0;
+    mazeInterval = setInterval(() => {
+        const span = document.createElement('span');
+        span.style.color = currentTextColor;
+        span.textContent = Math.random() < 0.5 ? diagA : diagB;
+        lineDiv.appendChild(span);
+        if (++col >= 38) {
+            col = 0;
+            lineDiv = document.createElement('div');
+            lineDiv.className = 'ready-line';
+            cursorLine.parentNode.insertBefore(lineDiv, cursorLine);
+        }
+        cursorLine.scrollIntoView({ block: 'end' });
+    }, 15);
+}
+
+function printDirectory() {
+    basic.outputLine('0 "GENX JAY DISK  " 64 2A');
+    basic.outputLine('12   "GENX JAY"       PRG');
+    basic.outputLine('3    "BLUESKY"        PRG');
+    basic.outputLine('664 BLOCKS FREE.');
+}
 
 // Update cursor color function
 function updateCursorColor(color) {
@@ -262,6 +334,29 @@ function updateCursorDisplay() {
 
 // Listen for keypress events
 document.addEventListener("keydown", (event) => {
+    // Any keypress stops the 10 PRINT maze
+    if (mazeInterval) {
+        clearInterval(mazeInterval);
+        mazeInterval = null;
+        inputBuffer = [];
+        addReadyPrompt();
+        cursorLine.innerHTML = '<span class="cursor">█</span>';
+        updateCursorColor(currentTextColor);
+        return;
+    }
+
+    // RUN/STOP: Escape breaks a running program
+    if (programRunning && event.key === 'Escape') {
+        running = false;
+        programRunning = false;
+        basic.outputLine('BREAK IN ' + (basic.lastLine || 0));
+        inputBuffer = [];
+        addReadyPrompt();
+        cursorLine.innerHTML = '<span class="cursor">█</span>';
+        updateCursorColor(currentTextColor);
+        return;
+    }
+
     let key = event.key;
 
     // Handle ALT + 1-8 for color changes (using Alt to avoid browser tab switching)
@@ -310,8 +405,14 @@ document.addEventListener("keydown", (event) => {
         
         // Handle numbered lines (BASIC program lines)
         if (/^\d+/.test(inputText)) {
-            const [lineNumber, ...code] = inputText.split(" ");
-            programLines[lineNumber] = code.join(" ");
+            const match = inputText.match(/^(\d+)\s*(.*)$/);
+            const lineNumber = parseInt(match[1], 10);
+            const code = match[2].trim();
+            if (code) {
+                programLines[lineNumber] = code;
+            } else {
+                delete programLines[lineNumber]; // bare line number deletes the line
+            }
             inputBuffer = [];
             cursorLine.innerHTML = '<span class="cursor">█</span>';
             updateCursorColor(currentTextColor);
@@ -321,42 +422,55 @@ document.addEventListener("keydown", (event) => {
         // Handle commands that need a READY prompt after execution
         let needsReadyPrompt = true;
         
-        if (inputText === 'RUN') {
+        if (inputText === 'RUN' && Object.keys(programLines).length === 0) {
             // Just show the Easter egg message without repeating the program lines
             const easterEggMessage = document.createElement("div");
             easterEggMessage.className = "easter-egg";
             const messageSpan = document.createElement('span');
             messageSpan.style.color = currentTextColor;
-            messageSpan.innerHTML = 'HAHA NICE TRY, SHOW ME WHAT YOU DID ON BLUESKY <a href="https://bsky.app/profile/jasonstum.com" target="_blank"><span class="inverse">@JASONSTUM.COM</span></a>';
+            messageSpan.innerHTML = 'HAHA NICE TRY, SHOW ME WHAT YOU DID ON BLUESKY <a href="https://bsky.app/profile/genxjay.com" target="_blank"><span class="inverse">@GENXJAY.COM</span></a>';
             easterEggMessage.appendChild(messageSpan);
             cursorLine.parentNode.insertBefore(easterEggMessage, cursorLine);
-        } 
+        }
         else if (inputText.startsWith('POKE 53280,')) {
             const colorIndex = parseInt(inputText.split(',')[1], 10);
             document.querySelector('.screen').style.borderColor = colors[colorIndex] || '#000000';
             document.body.style.backgroundColor = colors[colorIndex] || '#000000';
-        } 
+        }
         else if (inputText.startsWith('POKE 53281,')) {
             const colorIndex = parseInt(inputText.split(',')[1], 10);
             document.querySelector('.screen').style.backgroundColor = colors[colorIndex] || '#000000';
-        } 
-        else if (inputText === 'LOAD "*",8,1') {
+        }
+        else if (/^LOAD\s*"BLUESKY"\s*,\s*8/.test(inputText)) {
+            basic.outputLine('SEARCHING FOR BLUESKY');
+            basic.outputLine('FOUND "BLUESKY"');
+            basic.outputLine('LOADING');
+            window.open('https://bsky.app/profile/genxjay.com', '_blank');
+        }
+        else if (/^LOAD\s*"(\*|GENX JAY)"\s*,\s*8/.test(inputText)) {
             simulateLoadCommand(newLine);
             needsReadyPrompt = false;
-        } 
+        }
+        else if (/^LOAD\s*"\$"\s*,\s*8/.test(inputText)) {
+            basic.outputLine('SEARCHING FOR $');
+            basic.outputLine('LOADING');
+            directoryLoaded = true;
+        }
+        else if (inputText === 'LIST' && directoryLoaded && Object.keys(programLines).length === 0) {
+            directoryLoaded = false;
+            printDirectory();
+        }
         else if (inputText === 'SYS 64738') {
             window.location.reload();
             return;
-        } 
+        }
         else {
-            // Syntax error for unknown commands
-            const errorLine = document.createElement("div");
-            errorLine.className = "ready-line";
-            const errorSpan = document.createElement('span');
-            errorSpan.style.color = currentTextColor;
-            errorSpan.textContent = "?SYNTAX ERROR";
-            errorLine.appendChild(errorSpan);
-            cursorLine.parentNode.insertBefore(errorLine, cursorLine);
+            try {
+                basic.executeStatement(inputText);
+            } catch (error) {
+                basic.outputLine(error.message);
+            }
+            if (programRunning || mazeInterval) needsReadyPrompt = false; // READY comes when the program/maze ends
         }
         
         // Add READY prompt if needed and reset for next input
@@ -381,24 +495,25 @@ document.addEventListener("keydown", (event) => {
 function simulateLoadCommand(commandLine) {
     const loadingMessage = document.createElement("div");
     loadingMessage.className = "ready-line";
-    loadingMessage.textContent = "LOADING";
+    loadingMessage.textContent = "SEARCHING FOR *";
     commandLine.parentNode.insertBefore(loadingMessage, commandLine.nextSibling);
 
-    let dots = 0;
-    const loadingInterval = setInterval(() => {
-        dots = (dots + 1) % 4;
-        loadingMessage.textContent = "LOADING" + ".".repeat(dots);
-    }, 500);
-
     setTimeout(() => {
-        clearInterval(loadingInterval);
-        loadingMessage.textContent = "LOADING...";
+        loadingMessage.textContent = 'FOUND "GENX JAY"';
 
-        const errorMessage = document.createElement("div");
-        errorMessage.className = "ready-line";
-        errorMessage.textContent = "?SYNTAX ERROR";
-        loadingMessage.parentNode.insertBefore(errorMessage, loadingMessage.nextSibling);
-    }, 5000);
+        const loadingLine = document.createElement("div");
+        loadingLine.className = "ready-line";
+        loadingLine.textContent = "LOADING";
+        loadingMessage.parentNode.insertBefore(loadingLine, loadingMessage.nextSibling);
+
+        setTimeout(() => {
+            programLines = {
+                10: 'PRINT "HELLO FROM THE GENX JAY DISK"',
+                20: 'PRINT "FOLLOW ME ON BLUESKY: @GENXJAY.COM"'
+            };
+            addReadyPrompt();
+        }, 2500);
+    }, 1500);
 }
 
 function addReadyPrompt() {
@@ -414,4 +529,5 @@ function addReadyPrompt() {
     readySpan.textContent = "READY.";
     readyLine.appendChild(readySpan);
     cursorLine.parentNode.insertBefore(readyLine, cursorLine);
+    cursorLine.scrollIntoView({ block: 'end' });
 }

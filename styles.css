@@ -32,7 +32,9 @@ body {
     flex-direction: column;
     justify-content: flex-start;
     border: 5px solid #7C71DB; /* Outer border for the screen */
-    overflow: hidden;
+    overflow-y: auto; /* Scroll when output fills the screen */
+    scrollbar-width: none; /* Keep the retro look clean */
+    scrollbar-color: transparent transparent;
 }
 
 /* Boot Text Styling */
