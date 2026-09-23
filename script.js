@@ -638,14 +638,37 @@ document.addEventListener("keydown", (event) => {
         inputBuffer = [];
         cursorLine.innerHTML = '<span class="cursor">█</span>';
         updateCursorColor(currentTextColor);
-    } else if (key.length === 1) {
-        // Add new character with current color
+    } else if (key.length === 1 && !event.ctrlKey && !event.metaKey) {
+        // Add new character with current color (skip Ctrl/Cmd shortcuts like Ctrl+V/C/R)
         inputBuffer.push({
             char: key,
             color: currentTextColor
         });
         updateCursorDisplay();
     }
+});
+
+// Handle paste: feed each line through as if typed, submitting with Enter
+document.addEventListener('paste', (event) => {
+    const text = event.clipboardData.getData('text');
+    if (!text) return;
+    event.preventDefault();
+    resetIdleTimer();
+
+    // Stop the maze/screensaver if it's running
+    if (mazeInterval) {
+        clearInterval(mazeInterval);
+        mazeInterval = null;
+        addReadyPrompt();
+    }
+
+    const lines = text.replace(/\r/g, '').split('\n');
+    lines.forEach((line, i) => {
+        if (i === lines.length - 1 && line === '') return; // trailing newline
+        inputBuffer = line.toUpperCase().split('').map(ch => ({ char: ch, color: currentTextColor }));
+        updateCursorDisplay();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    });
 });
 
 function simulateLoadCommand(commandLine) {
