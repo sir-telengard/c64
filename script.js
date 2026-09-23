@@ -38,6 +38,8 @@ class BasicInterpreter {
         this.strings = {};
         this.program = {};
         this.stack = [];
+        this.forStack = [];
+        this.lastLine = 0;
         this.data = [];
         this.readPointer = 0;
     }
@@ -86,7 +88,7 @@ class BasicInterpreter {
         }
         
         // Variable assignment
-        if (statement.includes('=') && !statement.startsWith('IF')) {
+        if (statement.includes('=') && !statement.startsWith('IF') && !statement.startsWith('FOR ')) {
             return this.executeLet(statement);
         }
         
@@ -109,28 +111,79 @@ class BasicInterpreter {
         if (statement.startsWith('GOTO')) {
             return this.executeGoto(statement.substring(4));
         }
-        
+
+        // GOSUB command
+        if (statement.startsWith('GOSUB')) {
+            return this.executeGosub(statement.substring(5));
+        }
+
+        // RETURN command
+        if (statement === 'RETURN') {
+            return this.executeReturn();
+        }
+
+        // FOR command
+        if (statement.startsWith('FOR ')) {
+            return this.executeFor(statement.substring(4));
+        }
+
+        // NEXT command
+        if (statement.startsWith('NEXT')) {
+            return this.executeNext(statement.substring(4));
+        }
+
+        // IF/THEN command
+        if (statement.startsWith('IF ')) {
+            return this.executeIf(statement.substring(3));
+        }
+
+        // END/STOP halts the program
+        if (statement === 'END' || statement === 'STOP') {
+            running = false;
+            return;
+        }
+
         throw new Error(`?SYNTAX ERROR`);
     }
 
     executePrint(args) {
         args = args.trim();
-        let output = '';
-        
+
         if (!args) {
-            output = '';
-        } else if (args.startsWith('"') && args.endsWith('"')) {
-            // String literal
-            output = args.slice(1, -1);
-        } else if (this.isVariable(args)) {
-            // Variable
-            const value = this.variables[args] || 0;
-            output = value.toString();
-        } else {
-            // Number or expression (simplified)
-            output = this.evaluateExpression(args).toString();
+            this.outputLine('');
+            return;
         }
-        
+
+        // Split on ; and , outside of quotes
+        const parts = [];
+        let cur = '', inQuote = false;
+        for (const ch of args) {
+            if (ch === '"') inQuote = !inQuote;
+            if ((ch === ';' || ch === ',') && !inQuote) {
+                parts.push({ text: cur, sep: ch });
+                cur = '';
+            } else {
+                cur += ch;
+            }
+        }
+        parts.push({ text: cur, sep: '' });
+
+        let output = '';
+        for (const { text, sep } of parts) {
+            const t = text.trim();
+            if (t) {
+                if (t.startsWith('"') && t.endsWith('"')) {
+                    output += t.slice(1, -1);
+                } else {
+                    output += this.evaluateExpression(t).toString();
+                }
+            }
+            // Comma advances to the next 10-column tab stop, like a real C64
+            if (sep === ',') {
+                output += ' '.repeat(10 - (output.length % 10));
+            }
+        }
+
         this.outputLine(output);
     }
 
@@ -158,6 +211,8 @@ class BasicInterpreter {
         running = true;
         programRunning = true;
         programCounter = 0;
+        this.stack = [];
+        this.forStack = [];
 
         const step = () => {
             try {
@@ -196,6 +251,8 @@ class BasicInterpreter {
         programLines = {};
         variables = {};
         this.variables = {};
+        this.stack = [];
+        this.forStack = [];
     }
 
     executeGoto(target) {
@@ -208,6 +265,73 @@ class BasicInterpreter {
         }
         
         programCounter = index - 1; // -1 because the run loop increments after each statement
+    }
+
+    executeGosub(target) {
+        const lineNum = parseInt(target.trim());
+        const lineNumbers = Object.keys(programLines).map(Number).sort((a, b) => a - b);
+        const index = lineNumbers.indexOf(lineNum);
+
+        if (index === -1) {
+            throw new Error(`?UNDEF'D STATEMENT ERROR`);
+        }
+
+        this.stack.push(programCounter); // resume here after RETURN
+        programCounter = index - 1;
+    }
+
+    executeReturn() {
+        if (this.stack.length === 0) {
+            throw new Error('?RETURN WITHOUT GOSUB ERROR');
+        }
+        programCounter = this.stack.pop();
+    }
+
+    executeFor(args) {
+        const m = args.match(/^([A-Z][A-Z0-9]*)\s*=\s*(.+?)\s+TO\s+(.+?)(?:\s+STEP\s+(.+))?$/);
+        if (!m) {
+            throw new Error('?SYNTAX ERROR');
+        }
+        const varName = m[1];
+        const start = this.evaluateExpression(m[2]);
+        const end = this.evaluateExpression(m[3]);
+        const step = m[4] ? this.evaluateExpression(m[4]) : 1;
+        this.variables[varName] = start;
+        // Resume position for NEXT: the run loop's ++ lands on the line after FOR
+        this.forStack.push({ var: varName, end, step, pc: programCounter });
+    }
+
+    executeNext(varArg) {
+        const varName = varArg.trim();
+        const entry = this.forStack[this.forStack.length - 1];
+        if (!entry || (varName && entry.var !== varName)) {
+            throw new Error('?NEXT WITHOUT FOR ERROR');
+        }
+        this.variables[entry.var] += entry.step;
+        const v = this.variables[entry.var];
+        if ((entry.step > 0 && v <= entry.end) || (entry.step < 0 && v >= entry.end)) {
+            programCounter = entry.pc;
+        } else {
+            this.forStack.pop();
+        }
+    }
+
+    executeIf(args) {
+        const m = args.match(/^(.*?)\s+THEN\s+(.+)$/);
+        if (m) {
+            if (!this.evaluateExpression(m[1])) return;
+            const target = m[2].trim();
+            if (/^\d+$/.test(target)) {
+                return this.executeGoto(target);
+            }
+            return this.executeStatement(target);
+        }
+        // IF cond GOTO n form
+        const g = args.match(/^(.*?)\s+GOTO\s+(\d+)$/);
+        if (!g) throw new Error('?SYNTAX ERROR');
+        if (this.evaluateExpression(g[1])) {
+            return this.executeGoto(g[2]);
+        }
     }
 
     isVariable(name) {
@@ -233,12 +357,17 @@ class BasicInterpreter {
         
         // Simple arithmetic (for now)
         try {
-            // Replace variables with values
-            let processed = expr;
+            // BASIC operators -> JS equivalents
+            let processed = expr
+                .replace(/\bAND\b/g, '&&')
+                .replace(/\bOR\b/g, '||')
+                .replace(/<>|<=|>=|=(?!=)/g, m => ({ '<>': '!==', '<=': '<=', '>=': '>=', '=': '===' }[m]));
+
+            // Replace variables with values (word-bounded so "A" doesn't mangle "AND")
             for (const [varName, value] of Object.entries(this.variables)) {
-                processed = processed.replace(new RegExp(varName, 'g'), value);
+                processed = processed.replace(new RegExp('\\b' + varName + '\\b', 'g'), value);
             }
-            
+
             // Evaluate simple expressions
             return Function('"use strict"; return (' + processed + ')')();
         } catch (e) {
@@ -267,6 +396,15 @@ const basic = new BasicInterpreter();
 
 let directoryLoaded = false; // LOAD"$",8 was issued; next LIST shows the disk directory
 let mazeInterval = null; // 10 PRINT maze animation timer
+let idleTimer = null; // Screensaver countdown
+const IDLE_DELAY = 60000; // 60s idle -> maze screensaver
+
+function resetIdleTimer() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+        if (!mazeInterval && !programRunning) startMaze();
+    }, IDLE_DELAY);
+}
 
 function glyphSupported(ch) {
     const ctx = document.createElement('canvas').getContext('2d');
@@ -334,7 +472,8 @@ function updateCursorDisplay() {
 
 // Listen for keypress events
 document.addEventListener("keydown", (event) => {
-    // Any keypress stops the 10 PRINT maze
+    resetIdleTimer();
+    // Any keypress stops the 10 PRINT maze / screensaver
     if (mazeInterval) {
         clearInterval(mazeInterval);
         mazeInterval = null;
@@ -456,6 +595,23 @@ document.addEventListener("keydown", (event) => {
             basic.outputLine('LOADING');
             directoryLoaded = true;
         }
+        else if (/^SAVE\s*"([^"]+)"/.test(inputText)) {
+            const name = inputText.match(/^SAVE\s*"([^"]+)"/)[1];
+            basic.outputLine('SAVING ' + name);
+            localStorage.setItem('c64prog_' + name, JSON.stringify(programLines));
+        }
+        else if (/^LOAD\s*"([^"]+)"\s*,\s*8/.test(inputText)) {
+            const name = inputText.match(/^LOAD\s*"([^"]+)"\s*,\s*8/)[1];
+            const saved = localStorage.getItem('c64prog_' + name);
+            basic.outputLine('SEARCHING FOR ' + name);
+            if (saved === null) {
+                basic.outputLine('?FILE NOT FOUND ERROR');
+            } else {
+                basic.outputLine('FOUND "' + name + '"');
+                basic.outputLine('LOADING');
+                programLines = JSON.parse(saved);
+            }
+        }
         else if (inputText === 'LIST' && directoryLoaded && Object.keys(programLines).length === 0) {
             directoryLoaded = false;
             printDirectory();
@@ -531,3 +687,5 @@ function addReadyPrompt() {
     cursorLine.parentNode.insertBefore(readyLine, cursorLine);
     cursorLine.scrollIntoView({ block: 'end' });
 }
+
+resetIdleTimer();
