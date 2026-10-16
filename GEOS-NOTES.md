@@ -30,10 +30,10 @@ GEOS was developed by Berkeley Softworks. Original names identify the historical
 
 ## Files and deployment
 
-Serve the existing repository as static files. `index.html` now loads `geos.css` and `geos.js` before the original interpreter. The original BASIC command handler has one new GEOS command branch and a guard in its idle-timer reset. No packages, build step, server or external runtime requests are needed.
+Serve the existing repository as static files. GEOS code is included at the beginning of `script.js`, before the BASIC interpreter, and its styles are included in `styles.css`. This keeps deployment on the existing asset URLs and avoids missing standalone GEOS assets. The BASIC command handler includes the GEOS command branch and a guard in its idle-timer reset. `wrangler.jsonc` configures static asset deployment to the existing `jasonstum-homepage` Worker; `.assetsignore` limits publication to the website files. No packages, build step, server or external runtime requests are needed.
 
 For review, open the site, issue the command, explore both file pages and menus, close/reopen the disk, try the calculator and Note Pad, then return to BASIC and run an existing BASIC program. Confirm that an unrelated LOAD still follows the original behavior.
 
-## Validation performed
+## Original implementation validation
 
-JavaScript syntax checks passed for both scripts. Browser checks passed for exact and lowercase/spaced LOAD commands, loading cancellation, both disk pages, menu selection and GEOS information, icon and name-list views, disk close/reopen, calculator arithmetic (2 + 3 = 5), Note Pad paste isolation, keyboard opening and rename submission, deletion/restoration, return to BASIC, preservation/execution of a previously entered BASIC program, and an unrelated missing-file LOAD. The GEOS desktop fit a 390 x 844 viewport. No browser JavaScript errors were observed during these checks.
+JavaScript syntax checks passed before and after consolidating the scripts. Browser checks passed for exact and lowercase/spaced LOAD commands, loading cancellation, both disk pages, menu selection and GEOS information, icon and name-list views, disk close/reopen, calculator arithmetic (2 + 3 = 5), Note Pad paste isolation, keyboard opening and rename submission, deletion/restoration, return to BASIC, preservation/execution of a previously entered BASIC program, and an unrelated missing-file LOAD. The GEOS desktop fit a 390 x 844 viewport. No browser JavaScript errors were observed during these checks.
