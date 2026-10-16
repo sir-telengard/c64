@@ -32,11 +32,36 @@
     const PAINT_W=128, PAINT_H=56, paintColors=['#ffffff','#111111','#880000','#00aa55','#0000aa','#aa44cc','#eeee77','#0088ff'];
     let painting=null, paintSurface=null;
     let mountedD64=null, d64Picker=null, d64Request=0, nativeDocument=null;
+    function decodePhotoScrap(data){
+        if(data.length<3)throw new Error('Missing picture dimensions.');
+        const rowBytes=data[0],height=data[1]+256*data[2],width=rowBytes*8,size=rowBytes*height;
+        if(!rowBytes||!height||width*height>1048576)throw new Error('Picture dimensions exceed the viewer limit.');
+        const bitmap=new Uint8Array(size);let written=0,pos=3;
+        function emit(value,count){const end=Math.min(size,written+count);bitmap.fill(value,written,end);written=end;}
+        function packet(source,start,end){
+            const code=source[start++];
+            if(code>=1&&code<=127){if(start>=end)throw new Error('Truncated picture repeat.');emit(source[start++],code);}
+            else if(code>=129&&code<=219){const count=code-128;if(start+count>end)throw new Error('Truncated picture literal.');for(let j=0;j<count;j++)emit(source[start++],1);}
+            else throw new Error('Unsupported picture packet.');
+            return start;
+        }
+        while(written<size){
+            if(pos>=data.length)throw new Error('Picture bitmap is incomplete.');
+            const code=data[pos];
+            if(code>=221){
+                const length=code-220,repeats=data[pos+1],start=pos+2,end=start+length;
+                if(!repeats||end>data.length)throw new Error('Truncated picture pattern.');
+                for(let repeat=0;repeat<repeats&&written<size;repeat++){let cursor=start;while(cursor<end&&written<size)cursor=packet(data,cursor,end);}
+                pos=end;
+            }else pos=packet(data,pos,data.length);
+        }
+        return {width,height,rowBytes,bitmap};
+    }
     function decodeGeoWriteText(data,label){
         let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0;const runs=[];
         function append(value){
             text+=value;const last=runs[runs.length-1];
-            if(last&&last.fontId===fontId&&last.pointSize===pointSize&&last.style===style)last.text+=value;
+            if(last&&!last.picture&&last.fontId===fontId&&last.pointSize===pointSize&&last.style===style)last.text+=value;
             else runs.push({text:value,fontId,pointSize,style});
         }
         for(let i=0;i<data.length;){
@@ -44,7 +69,7 @@
             const length=code===17?27:code===23?4:code===16?5:1;
             if(i+length>data.length)throw new Error(label+': truncated formatting escape.');
             if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];}
-            else if(code===16){append('\n[Picture omitted]\n');images++;}
+            else if(code===16){const value='\n[Picture omitted]\n';text+=value;runs.push({text:value,fontId,pointSize,style,picture:{width:data[i+1]*8,height:data[i+2]+256*data[i+3],record:data[i+4]}});images++;}
             else if(code===9)append('\t');else if(code===13)append('\n');else if(code===12)append('\n[Page break]\n');
             else if(code>=32&&code<=126)append(String.fromCharCode(code));
             else if(length===1){append('\uFFFD');unsupported++;}
@@ -110,7 +135,8 @@
             }
             const header=checkedSector(file.infoTrack,file.infoSector),index=checkedSector(file.startTrack,file.startSector),claimed=new Set(['18/0',file.startTrack+'/'+file.startSector,file.infoTrack+'/'+file.infoSector,...seen]),items=[],notes=[];
             if(index[0]!==0||index[1]!==255)throw new Error('Invalid VLIR index sector.');
-            const startPage=header[137]+256*header[138];let pageGap=false;
+            const startPage=header[137]+256*header[138];let pageGap=false,vlirEnd=127;
+            for(let record=0;record<127;record++)if(index[2+record*2]===0&&index[3+record*2]===0){vlirEnd=record;break;}
             function readRecord(track,number,label){
                 const data=[];
                 while(track){
@@ -128,10 +154,25 @@
                 if(record<61&&pageGap)notes.push(label+': earlier page record is missing.');
                 const decoded=decodeGeoWriteText(readRecord(track,number,label),label);
                 if(decoded.unsupported)notes.push(label+': '+decoded.unsupported+' unsupported character codes.');
-                if(decoded.images)notes.push(label+': '+decoded.images+' pictures omitted.');
                 items.push({label,text:decoded.text,runs:decoded.runs,record});
             }
             if(!items.some(item=>item.record<61))throw new Error('No readable page records were found.');
+            const pictures=new Map();let picturePixels=0;
+            for(const item of items)for(const run of item.runs){if(!run.picture)continue;
+                const ref=run.picture;
+                try{
+                    if(ref.record<64||ref.record>126)throw new Error('Invalid picture record number.');
+                    if(ref.record>=vlirEnd)throw new Error('Picture record is past the end of the VLIR index.');
+                    if(!pictures.has(ref.record)){
+                        try{const track=index[2+ref.record*2],number=index[3+ref.record*2];if(!track)throw new Error('Picture record is missing.');pictures.set(ref.record,decodePhotoScrap(readRecord(track,number,'Picture '+ref.record)));}
+                        catch(error){pictures.set(ref.record,error);}
+                    }
+                    const picture=pictures.get(ref.record);if(picture instanceof Error)throw picture;
+                    if(picture.width!==ref.width||picture.height!==ref.height)throw new Error('Picture dimensions do not match the text reference.');
+                    if(picturePixels+picture.width*picture.height>4194304)throw new Error('Document picture budget exceeded.');
+                    picturePixels+=picture.width*picture.height;run.bitmap=picture;
+                }catch(error){run.pictureError=error.message;notes.push(item.label+', picture '+ref.record+': '+error.message);}
+            }
             return {items,warnings:notes};
         }
         return {files:result,diskName:diskText(bam.subarray(144,160))||'UNTITLED',freeBlocks,usedBlocks:664-freeBlocks,
@@ -407,6 +448,15 @@
                 if(m.kind==='geowrite'){
                     editor.tabIndex=0;editor.setAttribute('role','document');
                     for(const run of nativeDocument.data.items[nativeDocument.index].runs){
+                        if(run.bitmap){
+                            const picture=run.bitmap,image=element('canvas','geos-inline-picture');image.width=picture.width;image.height=picture.height;image.setAttribute('role','img');image.setAttribute('aria-label','Embedded picture, '+picture.width+' by '+picture.height+' pixels');
+                            const bitmapContext=image.getContext('2d'),pixels=bitmapContext.createImageData(picture.width,picture.height);
+                            for(let y=0;y<picture.height;y++)for(let x=0;x<picture.width;x++){
+                                const color=picture.bitmap[y*picture.rowBytes+(x>>3)]&(128>>(x&7))?0:255,offset=(y*picture.width+x)*4;
+                                pixels.data[offset]=color;pixels.data[offset+1]=color;pixels.data[offset+2]=color;pixels.data[offset+3]=255;
+                            }
+                            bitmapContext.putImageData(pixels,0,0);editor.appendChild(image);continue;
+                        }
                         const span=element('span');span.textContent=run.text;
                         Object.assign(span.style,{fontSize:run.pointSize+'px',fontWeight:run.style&64?'bold':'normal',fontStyle:run.style&16?'italic':'normal',textDecoration:run.style&128?'underline':'none'});
                         editor.appendChild(span);
@@ -422,7 +472,7 @@
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with bold, italic, underline and font sizes. A generic browser font approximates the original glyphs; one point is shown as one canvas pixel before desktop scaling. Zero-size codes use 10 pixels. Paragraph and page layout, reverse, outline, superscript and subscript are omitted. Pictures use placeholders. Export downloads plain text.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with bold, italic, underline, font sizes and monochrome pictures. A generic browser font approximates the original glyphs; one point is shown as one canvas pixel before desktop scaling. Zero-size codes use 10 pixels. Paragraph and page layout, reverse, outline, superscript and subscript are omitted. Pictures shrink to fit the viewer width; color is ignored. Unreadable pictures use placeholders and appear in the warnings below. Export downloads plain text with picture-omitted markers.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);
