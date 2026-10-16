@@ -37,3 +37,5 @@ For review, open the site, issue the command, explore both file pages and menus,
 ## Validation performed
 
 JavaScript syntax checks passed for both scripts. Browser checks passed for exact and lowercase/spaced LOAD commands, loading cancellation, both disk pages, menu selection and GEOS information, icon and name-list views, disk close/reopen, calculator arithmetic (2 + 3 = 5), Note Pad paste isolation, keyboard opening and rename submission, deletion/restoration, return to BASIC, preservation/execution of a previously entered BASIC program, and an unrelated missing-file LOAD. The GEOS desktop fit a 390 x 844 viewport. No browser JavaScript errors were observed during these checks.
+
+Startup failure recovery is covered by `node --test tests/geos-startup.test.cjs` (five checks). A missing stylesheet, unavailable canvas, or drawing failure restores BASIC and reports a load error. Escape cancels queued startup work. A missing GEOS script is reported without hiding the BASIC cursor.

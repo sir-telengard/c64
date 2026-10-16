@@ -694,6 +694,11 @@ document.addEventListener("keydown", (event) => {
         }
         else if (/^LOAD\s*"GEOS"\s*,\s*8\s*,\s*1\s*$/.test(inputText.trim())) {
             clearTimeout(idleTimer);
+            if (!window.GEOS) {
+                basic.outputLine('?GEOS NOT AVAILABLE - PLEASE REFRESH');
+                addReadyPrompt();
+                resetIdleTimer();
+            } else {
             cursorLine.style.visibility = 'hidden';
             GEOS.boot({
                 output: text => basic.outputLine(text),
@@ -705,6 +710,7 @@ document.addEventListener("keydown", (event) => {
                     resetIdleTimer();
                 }
             });
+            }
             needsReadyPrompt = false;
         }
         else if (/^LOAD\s*"BLUESKY"\s*,\s*8/.test(inputText)) {

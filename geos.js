@@ -148,6 +148,9 @@
         else {calc.display=calc.fresh||calc.display==='0'?key:(calc.display+key).slice(0,16);calc.fresh=false;}say('Calculator: '+calc.display);render();
     }
     function render() {
+        try { drawScreen(); } catch (error) { fail(error); }
+    }
+    function drawScreen() {
         if(state.phase!=='desktop')return;
         const active=document.activeElement;focusKey=active&&active.dataset?active.dataset.key:null;
         controls.replaceChildren();controls.setAttribute('role',state.modal?'dialog':'group');controls.setAttribute('aria-label',state.modal?state.modal.title:'Desktop controls');if(state.modal)controls.setAttribute('aria-modal','true');else controls.removeAttribute('aria-modal');ctx.imageSmoothingEnabled=false;drawDesktop();if(state.menu)drawMenu();if(state.modal)drawModal();
@@ -201,10 +204,11 @@
     }
     function fit() {if(!root)return;const scale=Math.max(.5,Math.min(4,Math.floor(Math.min((innerWidth-24)/344,(innerHeight-24)/224)*4)/4));root.style.setProperty('--geos-scale',scale);}
     function setup() {
-        if(root)return;
+        if(root&&ctx)return;
+        if(root)root.remove();
         root=element('section','geos-shell');root.hidden=true;root.setAttribute('aria-label','GEOS 2.0 desktop');
         const monitor=element('div','geos-monitor'),viewport=element('div','geos-viewport');desktop=element('div','geos-desktop');desktop.tabIndex=-1;
-        canvas=element('canvas');canvas.width=W;canvas.height=H;canvas.setAttribute('aria-hidden','true');ctx=canvas.getContext('2d');
+        canvas=element('canvas');canvas.width=W;canvas.height=H;canvas.setAttribute('aria-hidden','true');ctx=canvas.getContext('2d');if(!ctx)throw new Error('Canvas drawing is unavailable.');
         controls=element('div','geos-controls');controls.setAttribute('aria-label','Desktop controls');
         status=element('div','geos-sr-only');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
         desktop.append(canvas,controls,status);viewport.append(desktop);monitor.append(viewport);root.append(monitor);document.body.append(root);
@@ -216,14 +220,33 @@
         if(root)root.hidden=true;if(editor){editor.remove();editor=null;}
         document.body.classList.remove('geos-active');callbacks.onExit();
     }
+    function fail(error) {
+        if(state.phase==='off')return;
+        console.error('GEOS could not start or draw:',error);
+        try { callbacks.output('?GEOS LOAD ERROR - PLEASE REFRESH'); }
+        finally { leave(); }
+    }
     function boot(options) {
-        if(state.phase!=='off')return;callbacks=options;state.phase='loading';setup();
-        state.page=0;state.view='icon';state.diskOpen=true;state.selected.clear();state.menu=null;
-        options.output('SEARCHING FOR GEOS');
-        const delay=matchMedia('(prefers-reduced-motion: reduce)').matches?0:650;
-        timers.push(setTimeout(()=>options.output('FOUND GEOS'),delay));
-        timers.push(setTimeout(()=>options.output('LOADING'),delay*2));
-        timers.push(setTimeout(()=>{state.phase='desktop';root.hidden=false;document.body.classList.add('geos-active');fit();render();desktop.focus();say('GEOS 2.0 desktop. Tab to explore menus and files.');clockTimer=setInterval(()=>{if(!state.modal&&!state.menu)render();},30000);},delay*3));
+        if(state.phase!=='off')return;
+        callbacks=options;state.phase='loading';
+        try {
+            setup();
+            if(getComputedStyle(root).position!=='fixed')throw new Error('GEOS stylesheet did not load.');
+            state.page=0;state.view='icon';state.diskOpen=true;state.selected.clear();state.menu=null;
+            options.output('SEARCHING FOR GEOS');
+            const delay=matchMedia('(prefers-reduced-motion: reduce)').matches?0:650;
+            const schedule=(fn,ms)=>timers.push(setTimeout(()=>{try{fn();}catch(error){fail(error);}},ms));
+            schedule(()=>options.output('FOUND GEOS'),delay);
+            schedule(()=>options.output('LOADING'),delay*2);
+            schedule(()=>{
+                state.phase='desktop';root.hidden=false;document.body.classList.add('geos-active');
+                fit();render();
+                if(state.phase!=='desktop')return;
+                desktop.focus();say('GEOS 2.0 desktop. Tab to explore menus and files.');
+                clockTimer=setInterval(()=>{if(!state.modal&&!state.menu)render();},30000);
+            },delay*3);
+            schedule(()=>{if(state.phase==='loading')fail(new Error('GEOS startup timed out.'));},5000);
+        } catch(error) { fail(error); }
     }
     document.addEventListener('keydown',event=>{
         if(state.phase==='off')return;
