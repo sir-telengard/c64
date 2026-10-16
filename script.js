@@ -9,6 +9,7 @@ let variables = {}; // Store BASIC variables
 let programCounter = 0; // Current line being executed
 let running = false; // Program execution state
 let programRunning = false; // Async program loop active (defer READY until done)
+let keyQueue = []; // Keys waiting to be consumed by BASIC GET
 
 // Define color codes
 const colors = {
@@ -81,6 +82,16 @@ class BasicInterpreter {
             return this.executePrint(statement.substring(5));
         }
         
+        // POKE memory-mapped screen and text colors
+        if (statement.startsWith('POKE ')) {
+            return this.executePoke(statement.substring(5));
+        }
+
+        // GET reads one queued key into a string variable, or an empty string
+        if (statement.startsWith('GET ')) {
+            return this.executeGet(statement.substring(4));
+        }
+
         // LET statement (explicit or implicit)
         if (statement.startsWith('LET ')) {
             return this.executeLet(statement.substring(4));
@@ -148,6 +159,11 @@ class BasicInterpreter {
     executePrint(args) {
         args = args.trim();
 
+        if (/^CHR\$\(\s*147\s*\);?$/.test(args)) {
+            clearScreen();
+            return;
+        }
+
         if (!args) {
             this.outputLine('');
             return;
@@ -188,20 +204,79 @@ class BasicInterpreter {
 
     executeLet(statement) {
         statement = statement.trim();
-        const [varName, expr] = statement.split('=').map(s => s.trim());
-        
+        const equals = statement.indexOf('=');
+        if (equals === -1) throw new Error('?SYNTAX ERROR');
+        const varName = statement.substring(0, equals).trim();
+        const expr = statement.substring(equals + 1).trim();
+
         if (!this.isValidVariable(varName)) {
             throw new Error(`?SYNTAX ERROR`);
         }
-        
+
         const value = this.evaluateExpression(expr);
-        this.variables[varName] = value;
+        if (varName.endsWith('$')) {
+            this.strings[varName] = String(value);
+        } else {
+            this.variables[varName] = value;
+        }
+    }
+
+    executeGet(varName) {
+        varName = varName.trim();
+        if (!/^([A-Z][A-Z0-9]?\$)$/.test(varName)) {
+            throw new Error('?SYNTAX ERROR');
+        }
+        this.strings[varName] = keyQueue.shift() || '';
+    }
+
+    executePoke(args) {
+        const m = args.match(/^(\d+)\s*,\s*(.+)$/);
+        if (!m) throw new Error('?SYNTAX ERROR');
+        const address = Number(m[1]);
+        const value = this.evaluateExpression(m[2]);
+        if (!Number.isInteger(value) || value < 0 || value > 255) {
+            throw new Error('?ILLEGAL QUANTITY ERROR');
+        }
+        if (address === 53280 || address === 53281 || address === 646) {
+            if (value > 15) throw new Error('?ILLEGAL QUANTITY ERROR');
+            if (address === 53280) {
+                document.querySelector('.screen').style.borderColor = colors[value];
+                document.body.style.backgroundColor = colors[value];
+            } else if (address === 53281) {
+                document.querySelector('.screen').style.backgroundColor = colors[value];
+            } else {
+                currentTextColor = colors[value];
+                updateCursorColor(currentTextColor);
+            }
+        }
     }
 
     executeList() {
         const lineNumbers = Object.keys(programLines).map(Number).sort((a, b) => a - b);
         for (const lineNum of lineNumbers) {
             this.outputLine(`${lineNum} ${programLines[lineNum]}`);
+        }
+    }
+
+    executeProgramLine(line) {
+        const statements = [];
+        let current = '';
+        let inQuote = false;
+        for (const ch of line) {
+            if (ch === '"') inQuote = !inQuote;
+            if (ch === ':' && !inQuote) {
+                statements.push(current.trim());
+                current = '';
+            } else {
+                current += ch;
+            }
+        }
+        statements.push(current.trim());
+
+        for (const statement of statements) {
+            const before = programCounter;
+            this.executeStatement(statement);
+            if (!running || programCounter !== before) break;
         }
     }
 
@@ -212,6 +287,7 @@ class BasicInterpreter {
         programCounter = 0;
         this.stack = [];
         this.forStack = [];
+        keyQueue = [];
 
         const step = () => {
             try {
@@ -227,7 +303,7 @@ class BasicInterpreter {
                         startMaze();
                         return;
                     }
-                    this.executeStatement(statement);
+                    this.executeProgramLine(statement);
                     programCounter++;
                     if (++chunk >= 500) {
                         setTimeout(step, 0);
@@ -250,8 +326,10 @@ class BasicInterpreter {
         programLines = {};
         variables = {};
         this.variables = {};
+        this.strings = {};
         this.stack = [];
         this.forStack = [];
+        keyQueue = [];
     }
 
     executeGoto(target) {
@@ -334,19 +412,24 @@ class BasicInterpreter {
     }
 
     isVariable(name) {
-        return /^[A-Z][A-Z0-9]*$/.test(name);
+        return /^[A-Z][A-Z0-9]*\$?$/.test(name);
     }
 
     isValidVariable(name) {
-        return /^[A-Z][A-Z0-9]*$/.test(name) && name.length <= 2;
+        return /^[A-Z][A-Z0-9]?\$?$/.test(name);
     }
 
     evaluateExpression(expr) {
         expr = expr.trim();
-        
+
+        // String literal
+        if (expr.startsWith('"') && expr.endsWith('"')) {
+            return expr.slice(1, -1);
+        }
+
         // Variable reference
         if (this.isVariable(expr)) {
-            return this.variables[expr] || 0;
+            return expr.endsWith('$') ? (this.strings[expr] || '') : (this.variables[expr] || 0);
         }
         
         // Number
@@ -361,6 +444,12 @@ class BasicInterpreter {
                 .replace(/\bAND\b/g, '&&')
                 .replace(/\bOR\b/g, '||')
                 .replace(/<>|<=|>=|=(?!=)/g, m => ({ '<>': '!==', '<=': '<=', '>=': '>=', '=': '===' }[m]));
+
+            // Replace string variables before numeric variables ($ is not a word character)
+            for (const [varName, value] of Object.entries(this.strings)) {
+                const escapedName = varName.replace('$', '\\$');
+                processed = processed.replace(new RegExp('\\b' + escapedName, 'g'), JSON.stringify(value));
+            }
 
             // Replace variables with values (word-bounded so "A" doesn't mangle "AND")
             for (const [varName, value] of Object.entries(this.variables)) {
@@ -442,6 +531,12 @@ function printDirectory() {
     basic.outputLine('664 BLOCKS FREE.');
 }
 
+function clearScreen() {
+    document.querySelector('.boot-text').style.display = 'none';
+    cursorLine.parentNode.querySelectorAll('.ready-line, .easter-egg').forEach(line => line.remove());
+    cursorLine.scrollIntoView({ block: 'end' });
+}
+
 // Update cursor color function
 function updateCursorColor(color) {
     const currentCursor = cursorLine.querySelector('.cursor');
@@ -494,6 +589,13 @@ document.addEventListener("keydown", (event) => {
         addReadyPrompt();
         cursorLine.innerHTML = '<span class="cursor">█</span>';
         updateCursorColor(currentTextColor);
+        return;
+    }
+
+    // While a program runs, printable keys are consumed by BASIC GET
+    if (programRunning && event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        keyQueue.push(event.key.toUpperCase());
         return;
     }
 
@@ -684,6 +786,7 @@ document.addEventListener('paste', (event) => {
 function simulateLoadCommand(commandLine) {
     const loadingMessage = document.createElement("div");
     loadingMessage.className = "ready-line";
+    loadingMessage.style.color = currentTextColor;
     loadingMessage.textContent = "SEARCHING FOR *";
     commandLine.parentNode.insertBefore(loadingMessage, commandLine.nextSibling);
 
@@ -692,6 +795,7 @@ function simulateLoadCommand(commandLine) {
 
         const loadingLine = document.createElement("div");
         loadingLine.className = "ready-line";
+        loadingLine.style.color = currentTextColor;
         loadingLine.textContent = "LOADING";
         loadingMessage.parentNode.insertBefore(loadingLine, loadingMessage.nextSibling);
 
