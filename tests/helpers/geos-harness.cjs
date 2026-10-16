@@ -28,6 +28,8 @@ function desktop(options = {}) {
         click() { for (const fn of this.listeners.get('click') ?? []) fn({ detail: 0 }); }
         focus() { document.activeElement = this; }
         select() {}
+        get textContent() { return (this._text ?? '') + this.children.map(child => child.textContent).join(''); }
+        set textContent(value) { this._text = String(value); this.children = []; }
         getBoundingClientRect() { return { left: 32, top: 52, width: 256, height: 112 }; }
         setPointerCapture() {}
         getContext() { return context2d; }

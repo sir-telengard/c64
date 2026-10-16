@@ -136,3 +136,4 @@ body.geos-active > .screen { display: none; }
 .geos-desktop:focus { outline: none; }
 .geos-paint-surface { position: absolute; left: 32px; top: 52px; width: 256px; height: 112px; touch-action: none; cursor: crosshair; }
 .geos-paint-surface:focus-visible { outline: 1px dashed #111; outline-offset: 1px; }
+.geos-rich-document { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; font: 10px/1.3 Arial, sans-serif; cursor: text; user-select: text; }

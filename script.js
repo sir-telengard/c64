@@ -33,18 +33,24 @@
     let painting=null, paintSurface=null;
     let mountedD64=null, d64Picker=null, d64Request=0, nativeDocument=null;
     function decodeGeoWriteText(data,label){
-        let text='',unsupported=0,images=0;
+        let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0;const runs=[];
+        function append(value){
+            text+=value;const last=runs[runs.length-1];
+            if(last&&last.fontId===fontId&&last.pointSize===pointSize&&last.style===style)last.text+=value;
+            else runs.push({text:value,fontId,pointSize,style});
+        }
         for(let i=0;i<data.length;){
             const code=data[i];if(code===0)break;
             const length=code===17?27:code===23?4:code===16?5:1;
             if(i+length>data.length)throw new Error(label+': truncated formatting escape.');
-            if(code===16){text+='\n[Picture omitted]\n';images++;}
-            else if(code===9)text+='\t';else if(code===13)text+='\n';else if(code===12)text+='\n[Page break]\n';
-            else if(code>=32&&code<=126)text+=String.fromCharCode(code);
-            else if(length===1){text+='\uFFFD';unsupported++;}
+            if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];}
+            else if(code===16){append('\n[Picture omitted]\n');images++;}
+            else if(code===9)append('\t');else if(code===13)append('\n');else if(code===12)append('\n[Page break]\n');
+            else if(code>=32&&code<=126)append(String.fromCharCode(code));
+            else if(length===1){append('\uFFFD');unsupported++;}
             i+=length;
         }
-        return {text,unsupported,images};
+        return {text,runs,unsupported,images};
     }
     function isGeoWrite(file){return file.geosType===7&&file.structure==='VLIR'&&/^Write Image V2\.[01]$/i.test((file.className||'').replace(/\s+/g,' ').trim());}
     function parseD64(input) {
@@ -123,7 +129,7 @@
                 const decoded=decodeGeoWriteText(readRecord(track,number,label),label);
                 if(decoded.unsupported)notes.push(label+': '+decoded.unsupported+' unsupported character codes.');
                 if(decoded.images)notes.push(label+': '+decoded.images+' pictures omitted.');
-                items.push({label,text:decoded.text,record});
+                items.push({label,text:decoded.text,runs:decoded.runs,record});
             }
             if(!items.some(item=>item.record<61))throw new Error('No readable page records were found.');
             return {items,warnings:notes};
@@ -397,18 +403,26 @@
             const keys=['7','8','9','/','4','5','6','*','1','2','3','-','C','0','=','+'];keys.forEach((key,i)=>modalControl('calc-'+key,key,x+10+(i%4)*35,y+47+Math.floor(i/4)*23,29,()=>calculate(key)));
             modalControl('modal-close','Close',x+48,y+h-20,60,closeModal);
         } else if(['note','reader','document','geowrite'].includes(m.kind)) {
-            if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label',['reader','geowrite'].includes(m.kind)?'Document text':m.kind==='document'?'Edit document text':'Note pad text');editor.readOnly=['reader','geowrite'].includes(m.kind);editor.value=['reader','geowrite'].includes(m.kind)?m.value:m.kind==='document'?state.documentEdit.text:state.note;
+            if(!editor){editor=element(m.kind==='geowrite'?'div':'textarea',m.kind==='geowrite'?'geos-editor geos-rich-document':'geos-editor');editor.setAttribute('aria-label',['reader','geowrite'].includes(m.kind)?'Document text':m.kind==='document'?'Edit document text':'Note pad text');
+                if(m.kind==='geowrite'){
+                    editor.tabIndex=0;editor.setAttribute('role','document');
+                    for(const run of nativeDocument.data.items[nativeDocument.index].runs){
+                        const span=element('span');span.textContent=run.text;
+                        Object.assign(span.style,{fontSize:run.pointSize+'px',fontWeight:run.style&64?'bold':'normal',fontStyle:run.style&16?'italic':'normal',textDecoration:run.style&128?'underline':'none'});
+                        editor.appendChild(span);
+                    }
+                }else {editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:m.kind==='document'?state.documentEdit.text:state.note;}
                 if(m.kind==='document'){editor.maxLength=200000;editor.addEventListener('input',()=>{state.documentEdit.text=editor.value;state.documentEdit.message='';state.modal.title=documentTitle();render();});}
                 if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;const file=files.find(file=>file.id===state.launch?.fileId);if(file)file.content=state.note;persistDisk();render();});}desktop.appendChild(editor);}
             Object.assign(editor.style,{left:(x+8)+'px',top:(y+22)+'px',width:(w-16)+'px',height:'108px'});
             if(m.kind==='note')smallText(state.storageIssue?'session only - export disk':'saved to disk',x+8,y+134);
             if(m.kind==='document')smallText(state.documentEdit.message||(documentDirty()?'unsaved changes':state.documentEdit.fileId===null?'not saved yet':'saved to disk'),x+8,y+134);
             if(m.kind==='geowrite'){
-                const d=nativeDocument;smallText(d.data.items[d.index].label+' - text only'+(d.data.warnings.length?' - see Details':''),x+8,y+134);
+                const d=nativeDocument;smallText(d.data.items[d.index].label+' - formatted'+(d.data.warnings.length?' - see Details':''),x+8,y+134);
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Plain text preview. Fonts, styles and page layout are omitted. Pictures are represented by placeholders.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with bold, italic, underline and font sizes. A generic browser font approximates the original glyphs; one point is shown as one canvas pixel before desktop scaling. Zero-size codes use 10 pixels. Paragraph and page layout, reverse, outline, superscript and subscript are omitted. Pictures use placeholders. Export downloads plain text.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);
