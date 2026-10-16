@@ -28,6 +28,8 @@ function desktop(options = {}) {
         click() { for (const fn of this.listeners.get('click') ?? []) fn({ detail: 0 }); }
         focus() { document.activeElement = this; }
         select() {}
+        getBoundingClientRect() { return { left: 32, top: 52, width: 256, height: 112 }; }
+        setPointerCapture() {}
         getContext() { return context2d; }
         get lastElementChild() { return this.children.at(-1); }
         querySelectorAll(selector) {
@@ -70,7 +72,7 @@ function desktop(options = {}) {
     const source = fs.readFileSync(require.resolve('../../script.js'), 'utf8');
     const end = source.indexOf('\n})();');
     assert.ok(end > 0, 'GEOS closure found');
-    const geos = source.slice(0, end) + '\n globalThis.geosTest = {files,state,act,openFile,closeModal,launchById,applications,selectFile,diskSnapshot,decodeDisk,persistDisk,previewImport,exportDisk,get picker(){return diskPicker},get editor(){return editor},get controls(){return controls}};\n})();';
+    const geos = source.slice(0, end) + '\n globalThis.geosTest = {files,state,act,openFile,closeModal,launchById,applications,selectFile,diskSnapshot,decodeDisk,persistDisk,previewImport,exportDisk,get painting(){return painting},get paintSurface(){return paintSurface},get picker(){return diskPicker},get editor(){return editor},get controls(){return controls}};\n})();';
     vm.runInNewContext(geos, sandbox);
     sandbox.GEOS.boot({ output: text => output.push(text), onExit() {} });
     if (!options.manualBoot) advance(4000);

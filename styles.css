@@ -134,3 +134,5 @@ body.geos-active > .screen { display: none; }
 @media (prefers-reduced-motion: reduce) { .geos-shell * { animation: none; } }
 
 .geos-desktop:focus { outline: none; }
+.geos-paint-surface { position: absolute; left: 32px; top: 52px; width: 256px; height: 112px; touch-action: none; cursor: crosshair; }
+.geos-paint-surface:focus-visible { outline: 1px dashed #111; outline-offset: 1px; }

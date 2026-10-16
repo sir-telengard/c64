@@ -19,7 +19,7 @@
         ['GEOS',4,12,'system'],['GEOBOOT',12,4,'system'],['DESK TOP',6,22,'desktop','desktop'],['CONFIGURE',6,8,'configure','configure'],
         ['preference mgr',5,3,'preferences','preferences'],['pad color mgr',5,2,'colors','colors'],['COMM 1351',10,2,'mouse'],['MPS-801',9,4,'printer'],
         ['note pad',5,3,'note','note'],['calculator',5,3,'calculator','calculator'],['alarm clock',5,2,'clock','clock'],['READ ME',7,1,'readme'],
-        ['TEXT READER',6,3,'readme','text-reader']
+        ['TEXT READER',6,3,'readme','text-reader'],['PAINT',6,4,'note','paint']
     ].map(([name,geosType,size,icon,applicationId],id)=>({id,name,geosType,type:fileTypes[geosType],size,icon,applicationId,
         diskId,structure:[6,7,14].includes(geosType)?'VLIR':'sequential',locked:[4,12].includes(geosType)}));
     Object.assign(files[11],{parentApplication:'TEXT READER',parentDiskId:diskId,
@@ -29,15 +29,17 @@
     let timers = [], focusKey = null, lastFileClick = null, calc = { display:'0', left:null, op:null, fresh:true };
     const DISK_KEY='c64-geos-disk', BACKUP_KEY='c64-geos-disk-backup', RECOVERY_KEY='c64-geos-disk-recovery';
     let diskLoaded=false, writesBlocked=false, lastSavedRaw=null, importRequest=0;
+    const PAINT_W=128, PAINT_H=56, paintColors=['#ffffff','#111111','#880000','#00aa55','#0000aa','#aa44cc','#eeee77','#0088ff'];
+    let painting=null, paintSurface=null;
     function diskSnapshot() {
-        return {format:'geos-web-disk',version:2,disk:{id:state.diskId,name:state.diskName,pattern:state.pattern},
+        return {format:'geos-web-disk',version:files.some(file=>file.picture)?3:2,disk:{id:state.diskId,name:state.diskName,pattern:state.pattern},
             files:JSON.parse(JSON.stringify(files)),trashId:state.trash?.id??null};
     }
     function decodeDisk(raw) {
         if(typeof raw!=='string'||raw.length>1000000)throw new Error('Disk backup is too large.');
         const data=JSON.parse(raw);
         if(data?.format!=='geos-web-disk')throw new Error('Not a GEOS web disk backup.');
-        if(data.version!==1&&data.version!==2)throw new Error('Disk version is not supported.');
+        if(![1,2,3].includes(data.version))throw new Error('Disk version is not supported.');
         const validText=(v,max)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
         const pattern=data.version===1?(data.disk?.pattern??0):data.disk?.pattern;
         if(!validText(data.disk?.id,64)||!validText(data.disk?.name,16)||![0,1].includes(pattern))throw new Error('Invalid disk information.');
@@ -58,6 +60,12 @@
                 const content=Array.isArray(file.content)&&file.content.every(line=>typeof line==='string')?file.content.join('\n'):file.content;
                 if(typeof content!=='string'||content.length>200000)throw new Error('Invalid document text.');result.content=content;
             }
+            if(file.picture!==undefined){
+                const p=file.picture;
+                if(file.geosType!==7||p?.width!==PAINT_W||p?.height!==PAINT_H||typeof p.pixels!=='string'||p.pixels.length!==PAINT_W*PAINT_H||!/^[0-7]+$/.test(p.pixels))throw new Error('Invalid picture data.');
+                result.picture={width:PAINT_W,height:PAINT_H,pixels:p.pixels};
+                if(file.size<Math.ceil(p.pixels.length/1024))throw new Error('Invalid picture size.');
+            }
             return result;
         });
         if(restored.reduce((sum,file)=>sum+file.size,0)>165)throw new Error('Disk capacity exceeded.');
@@ -68,7 +76,7 @@
             if(typeof data.note!=='string'||data.note.length>2000)throw new Error('Invalid note text.');
             const note=restored.find(file=>file.applicationId==='note');if(note&&note.content===undefined)note.content=data.note;
         }
-        return {format:'geos-web-disk',version:2,disk:{id:data.disk.id,name:data.disk.name,pattern},files:restored,trashId};
+        return {format:'geos-web-disk',version:restored.some(file=>file.picture)?3:2,disk:{id:data.disk.id,name:data.disk.name,pattern},files:restored,trashId};
     }
     function applyDisk(data) {
         files.splice(0,files.length,...data.files);state.diskId=data.disk.id;state.diskName=data.disk.name;state.pattern=data.disk.pattern;
@@ -126,7 +134,7 @@
     }
     const menus = {
         geos:[['GEOS info','geos-info'],['deskTop info','desktop-info'],null,['select printer','printer'],['select input','input'],null,['preference mgr','preferences'],['pad color mgr','colors'],['alarm clock','clock'],['note pad','note'],['calculator','calculator']],
-        file:[['new text','new-text'],['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
+        file:[['new text','new-text'],['new picture','new-picture'],['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
         view:[['by icon','view-icon'],['by size','view-size'],['by type','view-type'],['by date','view-date'],['by name','view-name']],
         disk:[['open','disk-open'],['close','disk-close'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
         select:[['all','select-all'],['none','select-none']],
@@ -233,12 +241,14 @@
         let y=13;items.forEach((item,i)=>{if(!item){line(x+1,y+1,x+w-2,y+1);y+=4;return;}const [name,action,shortcut]=item;const active=i===state.hover;if(active)fill(x+1,y,w-2,12,INK);text(name,x+4,y+2,active?PAPER:INK);if(shortcut)text('C='+shortcut,x+w-25,y+2,active?PAPER:INK);
             if(addControls)control('item-'+action,name,x+1,y,w-2,12,()=>act(action),{role:'menuitem',hover:()=>{if(state.hover!==i){state.hover=i;drawMenu(false);}}});y+=12;});
     }
-    function dialog(title,lines,buttons=[['OK',closeModal]],kind='message',value='') {lastFileClick=null;if(editor){editor.remove();editor=null;}state.menu=null;state.modal={title,lines,buttons,kind,value};say(title+'. '+lines.join(' '));render();focusFirst();}
+    function dialog(title,lines,buttons=[['OK',closeModal]],kind='message',value='') {lastFileClick=null;if(editor){editor.remove();editor=null;}if(kind!=='paint'&&paintSurface){paintSurface.remove();paintSurface=null;}state.menu=null;state.modal={title,lines,buttons,kind,value};say(title+'. '+lines.join(' '));render();focusFirst();}
     function closeModal() {
+        if(painting){if(state.modal?.kind==='paint')confirmPaint(finishCloseModal);else showPaint();return;}
         if(state.documentEdit){if(state.modal?.kind==='document')confirmDocumentAction(()=>finishCloseModal());else showDocumentEditor();return;}
         finishCloseModal();
     }
     function finishCloseModal() {
+        painting=null;if(paintSurface){paintSurface.remove();paintSurface=null;}
         state.documentEdit=null;
         state.modal=null;if(editor){editor.remove();editor=null;}
         const saved=state.launch?.desktop;state.launch=null;
@@ -247,13 +257,14 @@
         const key=saved?.focusKey||'menu-geos';
         const target=[...controls.children].find(el=>el.dataset.key===key)||controls.querySelector('[data-key="menu-geos"]');if(target)target.focus();
     }
-    function focusFirst() {const target=editor||controls.querySelector('[data-modal="true"]');if(target)target.focus();}
+    function focusFirst() {const target=editor||paintSurface||controls.querySelector('[data-modal="true"]');if(target)target.focus();}
     function drawModal() {
-        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(['note','reader','document'].includes(m.kind)){x=40;y=24;w=240;h=161;}
+        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(['note','reader','document'].includes(m.kind)){x=40;y=24;w=240;h=161;}if(m.kind==='paint'){x=4;y=14;w=312;h=183;}
         // The active dialog blocks every desktop control, including keyboard focus.
         controls.replaceChildren();fill(x+3,y+3,w,h,INK);fill(x,y,w,h);box(x,y,w,h);box(x+2,y+2,w-4,h-4);fill(x+3,y+3,w-6,12,INK);center(m.title,x+4,y+5,w-8,PAPER);
         const modalControl=(key,name,bx,by,bw,fn)=>{button(key,name,bx,by,bw,fn);controls.lastElementChild.dataset.modal='true';};
-        if(m.kind==='calculator') {
+        if(m.kind==='paint') {drawPaint(modalControl);
+        } else if(m.kind==='calculator') {
             fill(x+10,y+23,w-20,16);box(x+10,y+23,w-20,16);const display=calc.display.slice(0,18);text(display,x+w-15-width(display),y+28);
             const keys=['7','8','9','/','4','5','6','*','1','2','3','-','C','0','=','+'];keys.forEach((key,i)=>modalControl('calc-'+key,key,x+10+(i%4)*35,y+47+Math.floor(i/4)*23,29,()=>calculate(key)));
             modalControl('modal-close','Close',x+48,y+h-20,60,closeModal);
@@ -352,7 +363,104 @@
         let name=(draft.name||'untitled').replace(/[\\/:*?"<>|]/g,'_');if(!name.toLowerCase().endsWith('.txt'))name+='.txt';
         downloadFile(draft.text,name,'text/plain;charset=utf-8');say('Document text downloaded.');
     }
+    function paintDirty(){return !!painting&&painting.pixels.join('')!==painting.saved;}
+    function showPaint(){dialog((painting.name||'Untitled picture')+(paintDirty()?' *':''),[],[['Close',closeModal]],'paint');}
+    function beginPaint(file=null){
+        if(file&&!file.picture){dialog('Paint',['This file has no picture data.']);return;}
+        const pixels=file?file.picture.pixels:'0'.repeat(PAINT_W*PAINT_H);
+        painting={fileId:file?.id??null,name:file?.name||'',pixels:[...pixels],saved:pixels,locked:!!file?.locked,tool:'pencil',color:'1',undo:[],cursor:[0,0],stroke:null,message:''};showPaint();
+    }
+    function confirmPaint(next){
+        if(!paintDirty()){next();return;}
+        dialog('Unsaved picture',['Save your changes first?'],[['Save',()=>savePaint(next)],['Discard',next],['Cancel',showPaint]]);
+    }
+    function newPaint(){
+        if(!state.launch){
+            if(!available().some(file=>file.applicationId==='paint')){
+                let id=0;while(files.some(file=>file.id===id))id++;
+                let name='PAINT',n=2;while(files.some(file=>file.name.toUpperCase()===name))name='PAINT '+n++;
+                const app={id,name,geosType:6,type:'application',size:4,icon:'note',applicationId:'paint',diskId:state.diskId,structure:'sequential',locked:false};
+                const candidate=diskSnapshot();candidate.files.push(app);
+                try{decodeDisk(JSON.stringify(candidate));}catch(e){dialog('Paint unavailable',['Disk full. Make room for Paint.']);return;}
+                files.push(app);if(!persistDisk()){files.pop();dialog('Paint unavailable',['Disk could not be saved.','Export your disk for backup.']);return;}
+            }
+            launchById('paint');return;
+        }
+        confirmPaint(()=>beginPaint());
+    }
+    function paintRemember(){painting.undo.push(painting.pixels.join(''));if(painting.undo.length>12)painting.undo.shift();painting.message='';}
+    function paintPoint(x,y,color){if(x>=0&&y>=0&&x<PAINT_W&&y<PAINT_H)painting.pixels[y*PAINT_W+x]=color;}
+    // Integer raster primitives: inclusive endpoints, clipped to this picture's bounds.
+    function paintLine(x,y,x2,y2,color){
+        const dx=Math.abs(x2-x),sx=x<x2?1:-1,dy=-Math.abs(y2-y),sy=y<y2?1:-1;let error=dx+dy;
+        while(true){paintPoint(x,y,color);if(x===x2&&y===y2)break;const e=2*error;if(e>=dy){error+=dy;x+=sx;}if(e<=dx){error+=dx;y+=sy;}}
+    }
+    function paintFill(x,y,color){
+        const old=painting.pixels[y*PAINT_W+x];if(old===color)return;
+        const stack=[[x,y]];paintPoint(x,y,color);
+        while(stack.length){const [px,py]=stack.pop();for(const [nx,ny] of [[px-1,py],[px+1,py],[px,py-1],[px,py+1]]){
+            if(nx>=0&&ny>=0&&nx<PAINT_W&&ny<PAINT_H&&painting.pixels[ny*PAINT_W+nx]===old){paintPoint(nx,ny,color);stack.push([nx,ny]);}
+        }}
+    }
+    function paintStart(x,y){
+        if(painting.locked)return;paintRemember();painting.cursor=[x,y];
+        painting.stroke={start:[x,y],last:[x,y],base:painting.pixels.join('')};paintMove(x,y);
+    }
+    function paintMove(x,y){
+        const p=painting,s=p.stroke;if(!s)return;const color=p.tool==='eraser'?'0':p.color;
+        if(p.tool==='fill'){paintFill(...s.start,color);p.stroke=null;}
+        else if(p.tool==='line'||p.tool==='rect'){
+            p.pixels=[...s.base];const [a,b]=s.start;
+            if(p.tool==='line')paintLine(a,b,x,y,color);
+            else {paintLine(a,b,x,b,color);paintLine(x,b,x,y,color);paintLine(x,y,a,y,color);paintLine(a,y,a,b,color);}
+        }else paintLine(...s.last,x,y,color);
+        if(p.stroke)p.stroke.last=[x,y];p.cursor=[x,y];state.modal.title=(p.name||'Untitled picture')+(paintDirty()?' *':'');render();
+    }
+    function drawPaint(addButton){
+        const p=painting;
+        ['pencil','eraser','fill','line','rect'].forEach((tool,i)=>{const bx=10+i*61;addButton('paint-'+tool,tool,bx,32,57,()=>{p.tool=tool;render();});controls.lastElementChild.setAttribute('aria-pressed',String(p.tool===tool));if(p.tool===tool)box(bx-1,31,59,15);});
+        box(31,51,258,114);
+        for(let y=0;y<PAINT_H;y++)for(let x=0;x<PAINT_W;x++)fill(32+x*2,52+y*2,2,2,paintColors[Number(p.pixels[y*PAINT_W+x])]);
+        paintColors.forEach((color,i)=>{fill(10,52+i*14,15,12,color);box(10,52+i*14,15,12);if(p.color===String(i))box(8,50+i*14,19,16);control('paint-color-'+i,'Color '+['white','black','red','green','blue','purple','yellow','light blue'][i],8,50+i*14,19,16,()=>{p.color=String(i);render();},{selected:p.color===String(i)});controls.lastElementChild.dataset.modal='true';});
+        smallText(p.message||(p.locked?'write protected':paintDirty()?'unsaved changes':'128 x 56 - '+p.tool),32,169);
+        addButton('paint-new','New',10,181,45,newPaint);
+        addButton('paint-save','Save',61,181,46,()=>savePaint());
+        addButton('paint-undo','Undo',113,181,46,()=>{if(p.locked)return;const previous=p.undo.pop();if(previous){p.pixels=[...previous];showPaint();}});
+        addButton('paint-export','Export',165,181,62,exportPaint);
+        addButton('modal-close','Close',233,181,70,closeModal);
+        if(!paintSurface){
+            paintSurface=element('div','geos-paint-surface');paintSurface.tabIndex=0;paintSurface.setAttribute('role','group');paintSurface.setAttribute('aria-label','Picture canvas. Drag to draw. Arrow keys move; Space draws. Line and rectangle: Space to start, arrows, Space to finish.');
+            const position=e=>{const rect=paintSurface.getBoundingClientRect();return [Math.max(0,Math.min(PAINT_W-1,Math.floor((e.clientX-rect.left)*PAINT_W/rect.width))),Math.max(0,Math.min(PAINT_H-1,Math.floor((e.clientY-rect.top)*PAINT_H/rect.height)))];};
+            paintSurface.addEventListener('pointerdown',e=>{if(e.button!==0||painting.locked||painting.pointerId!==undefined)return;e.preventDefault();painting.pointerId=e.pointerId;paintSurface.focus();paintSurface.setPointerCapture(e.pointerId);paintStart(...position(e));});
+            paintSurface.addEventListener('pointermove',e=>{if(painting.stroke&&painting.pointerId===e.pointerId){e.preventDefault();paintMove(...position(e));}});
+            paintSurface.addEventListener('pointerup',e=>{if(painting.pointerId!==e.pointerId)return;if(painting.stroke)paintMove(...position(e));painting.stroke=null;delete painting.pointerId;});
+            paintSurface.addEventListener('pointercancel',()=>{delete painting.pointerId;if(painting.stroke){painting.pixels=[...painting.stroke.base];painting.stroke=null;render();}});
+            paintSurface.addEventListener('lostpointercapture',()=>{painting.stroke=null;delete painting.pointerId;});desktop.appendChild(paintSurface);
+        }
+    }
+    function savePaint(next=showPaint,name=null){
+        const p=painting;if(!p||p.locked)return;
+        if(p.fileId===null&&name===null){
+            dialog('Save picture',['Enter a file name:'],[['Save',()=>{const value=editor.value.trim();if(!value||files.some(f=>f.name.toUpperCase()===value.toUpperCase())){state.modal.lines=['Enter a file name:',value?'That name is already used.':'A name is required.'];render();return;}savePaint(next,value);}],['Cancel',showPaint]],'rename',p.name);return;
+        }
+        const index=files.findIndex(f=>f.id===p.fileId),old=files[index],app=files.find(f=>f.id===state.launch?.fileId);
+        if(!app||(p.fileId!==null&&(!old||old.locked||old.id===state.trash?.id))){p.message='Picture is not writable.';showPaint();return;}
+        let id=0;while(files.some(f=>f.id===id))id++;
+        const updated={...(old||{id,name,geosType:7,type:'document',icon:'note',diskId:state.diskId,structure:'sequential',locked:false,parentApplication:app.name,parentDiskId:app.diskId}),size:7,picture:{width:PAINT_W,height:PAINT_H,pixels:p.pixels.join('')}};
+        const candidate=diskSnapshot();if(index<0)candidate.files.push(updated);else candidate.files[index]=updated;
+        try{decodeDisk(JSON.stringify(candidate));}catch(e){p.message='Disk full. Export your picture.';showPaint();return;}
+        if(index<0)files.push(updated);else files[index]=updated;
+        if(!persistDisk()){if(index<0)files.pop();else files[index]=old;p.message='Not saved. Export your picture.';showPaint();return;}
+        p.fileId=updated.id;p.name=updated.name;p.saved=updated.picture.pixels;p.message='Saved to disk.';
+        const position=available().findIndex(f=>f.id===updated.id);Object.assign(state.launch.desktop,{page:Math.floor(position/8),diskOpen:true,selected:[updated.id],focusKey:'file-'+updated.id});next();
+    }
+    function exportPaint(){
+        // Portable SVG keeps the exact pixels and opens without this website.
+        let rectangles='';painting.pixels.forEach((color,i)=>{if(color!=='0')rectangles+='<rect x="'+(i%PAINT_W)+'" y="'+Math.floor(i/PAINT_W)+'" width="1" height="1" fill="'+paintColors[Number(color)]+'"/>';});
+        downloadFile('<svg xmlns="http://www.w3.org/2000/svg" width="512" height="224" viewBox="0 0 128 56" shape-rendering="crispEdges"><rect width="128" height="56" fill="white"/>'+rectangles+'</svg>',(painting.name||'untitled').replace(/[\\/:*?"<>|]/g,'_')+'.svg','image/svg+xml');
+    }
     const applications = new Map([
+        ['paint',{geosType:6,open:document=>beginPaint(document)}],
         ['desktop',{geosType:6,open:()=>closeModal()}],
         ['configure',{geosType:6,open:()=>dialog('CONFIGURE 2.0',['Drive A: 1541   Device 8','Input: mouse / keyboard','64K RAM'])}],
         ['preferences',{geosType:5,open:()=>dialog('Preference Manager',['Pointer: mouse / touch','Display: 320 x 200','Tab: select   Enter: open','Esc: close   F1: shortcuts'])}],
@@ -405,6 +513,7 @@
             case 'desktop-info':dialog('deskTop info',['deskTop   Version 2.0','A browser recreation for','GENX JAY','jasonstum.com']);return;
             case 'open':if(file){openFile(file);return;}dialog('Open',['Select a file first.']);return;
             case 'new-text':newDocument();return;
+            case 'new-picture':newPaint();return;
             case 'info':if(!file){dialog('File info',['Select a file first.']);return;}dialog('File info',[file.name,file.type,file.size+' Kbytes',file.locked?'write protected':'not write protected',file.parentApplication?'opens with '+file.parentApplication:file.structure]);return;
             case 'rename':if(!file){dialog('Rename',['Select a file first.']);return;}if(file.locked){dialog('Rename',['This system file is protected.']);return;}rename('Rename file',file.name,name=>{file.name=name;});return;
             case 'duplicate':if(!file){dialog('Duplicate',['Select a file first.']);return;}if(files.reduce((n,f)=>n+f.size,0)+file.size>165){dialog('Duplicate',['Disk full.']);return;}{let id=0;while(files.some(file=>file.id===id))id++;let name,count=1;do{const prefix=count===1?'copy ':'copy '+count+' ';name=prefix+file.name.slice(0,16-prefix.length);count++;}while(files.some(file=>file.name.toUpperCase()===name.toUpperCase()));const copy={...file,id,name,locked:[4,12].includes(file.geosType)};const candidate=diskSnapshot();candidate.files.push(copy);try{decodeDisk(JSON.stringify(candidate));}catch(e){dialog('Duplicate',['Disk full.']);return;}files.push(copy);persistDisk();}break;
@@ -427,7 +536,7 @@
             case 'input':dialog('Select input',['Mouse / touch / keyboard','Input driver selected.']);return;
             case 'preferences':case 'colors':case 'clock':case 'calculator':case 'note':launchById(action);return;
             case 'shortcuts':dialog('Shortcuts',['Tab / arrows: select controls','Enter / Space: activate','Page Up / Down: turn page','Esc: close   Alt+B: BASIC']);return;
-            case 'quit':if(state.documentEdit){confirmDocumentAction(()=>{state.documentEdit=null;leave();});return;}dialog('Return to BASIC',['Leave GEOS and return to BASIC?'],[['OK',leave],['Cancel',closeModal]]);return;
+            case 'quit':if(painting){confirmPaint(leave);return;}if(state.documentEdit){confirmDocumentAction(()=>{state.documentEdit=null;leave();});return;}dialog('Return to BASIC',['Leave GEOS and return to BASIC?'],[['OK',leave],['Cancel',closeModal]]);return;
         }
         render();
     }
@@ -449,6 +558,7 @@
         window.addEventListener('resize',fit);
     }
     function leave() {
+        painting=null;if(paintSurface){paintSurface.remove();paintSurface=null;}
         timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);importRequest++;state.phase='off';state.menu=null;state.modal=null;state.launch=null;state.documentEdit=null;lastFileClick=null;
         if(root)root.hidden=true;if(editor){editor.remove();editor=null;}
         document.body.classList.remove('geos-active');callbacks.onExit();
@@ -470,20 +580,28 @@
         if(state.phase==='loading'){if(event.key==='Escape'){event.preventDefault();leave();}return;}
         if(event.key==='Escape'){event.preventDefault();if(state.modal?.cancel)state.modal.cancel();else if(state.modal)closeModal();else if(state.menu){state.menu=null;render();}else act('quit');return;}
         if(event.altKey&&event.key.toLowerCase()==='b'){event.preventDefault();act('quit');return;}
+        if(state.modal?.kind==='paint'){
+            if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();savePaint();return;}
+            if(event.target===paintSurface){
+                const p=painting,[x,y]=p.cursor;
+                if(event.key.startsWith('Arrow')){event.preventDefault();p.cursor=[Math.max(0,Math.min(PAINT_W-1,x+(event.key==='ArrowRight'?1:event.key==='ArrowLeft'?-1:0))),Math.max(0,Math.min(PAINT_H-1,y+(event.key==='ArrowDown'?1:event.key==='ArrowUp'?-1:0)))];if(p.stroke)paintMove(...p.cursor);say('Picture '+p.cursor.join(', '));return;}
+                if(event.key===' '||event.key==='Enter'){event.preventDefault();if(p.stroke){paintMove(x,y);p.stroke=null;}else{paintStart(x,y);if(!['line','rect'].includes(p.tool))p.stroke=null;}return;}
+            }
+        }
         if(state.modal?.kind==='document'&&(event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();saveDocument();return;}
         if(event.target===editor&&event.key!=='Tab'){if(event.key==='Enter'&&state.modal?.kind==='rename'){event.preventDefault();state.modal.buttons[0][1]();}return;}
         if(!state.modal&&event.key==='Enter'&&event.target.dataset?.key?.startsWith('file-')){event.preventDefault();const file=files.find(f=>f.id===Number(event.target.dataset.key.slice(5)));if(file)openFile(file);return;}
         if(event.key==='F1'){event.preventDefault();act('shortcuts');return;}
         if(state.modal&&state.modal.kind==='calculator'&&/^[0-9+*/=\-]$/.test(event.key)){event.preventDefault();calculate(event.key);return;}
         if(state.modal&&event.key==='Enter'&&event.target===desktop){event.preventDefault();state.modal.buttons[0][1]();return;}
-        if(event.key==='Tab'){const list=[...controls.querySelectorAll('button:not(:disabled)')];if(editor)list.unshift(editor);if(list.length){event.preventDefault();let i=list.indexOf(document.activeElement);i=i<0?(event.shiftKey?list.length-1:0):(i+(event.shiftKey?-1:1)+list.length)%list.length;list[i].focus();}return;}
+        if(event.key==='Tab'){const list=[...controls.querySelectorAll('button:not(:disabled)')];if(editor)list.unshift(editor);if(paintSurface)list.unshift(paintSurface);if(list.length){event.preventDefault();let i=list.indexOf(document.activeElement);i=i<0?(event.shiftKey?list.length-1:0):(i+(event.shiftKey?-1:1)+list.length)%list.length;list[i].focus();}return;}
         if(!state.modal&&(event.key==='PageDown'||event.key==='PageUp')){event.preventDefault();act(event.key==='PageDown'?'page-next':'page-previous');return;}
         if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();const list=[...controls.querySelectorAll('button:not(:disabled)')];let i=list.indexOf(document.activeElement);const step=event.key==='ArrowLeft'||event.key==='ArrowUp'?-1:1;list[(i+step+list.length)%list.length]?.focus();return;}
         if(!state.modal&&event.key==='Enter'&&event.target===desktop){event.preventDefault();act('open');}
     },true);
     // Pasting into the note pad must never execute commands in the hidden BASIC prompt.
     document.addEventListener('paste',event=>{if(state.phase!=='off')event.stopImmediatePropagation();},true);
-    window.addEventListener('beforeunload',event=>{if(documentDirty()){event.preventDefault();event.returnValue='';}});
+    window.addEventListener('beforeunload',event=>{if(documentDirty()||paintDirty()){event.preventDefault();event.returnValue='';}});
     window.GEOS={boot,get active(){return state.phase!=='off';}};
 })();
 
