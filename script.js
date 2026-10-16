@@ -580,6 +580,15 @@ document.addEventListener("keydown", (event) => {
             const colorIndex = parseInt(inputText.split(',')[1], 10);
             document.querySelector('.screen').style.backgroundColor = colors[colorIndex] || '#000000';
         }
+        else if (/^POKE\s+646\s*,/.test(inputText)) {
+            const colorIndex = Number(inputText.split(',')[1].trim());
+            if (!Number.isInteger(colorIndex) || colorIndex < 0 || colorIndex > 15) {
+                basic.outputLine('?ILLEGAL QUANTITY ERROR');
+            } else {
+                currentTextColor = colors[colorIndex];
+                updateCursorColor(currentTextColor);
+            }
+        }
         else if (/^LOAD\s*"BLUESKY"\s*,\s*8/.test(inputText)) {
             basic.outputLine('SEARCHING FOR BLUESKY');
             basic.outputLine('FOUND "BLUESKY"');
