@@ -291,8 +291,7 @@ class BasicInterpreter {
 
         const step = () => {
             try {
-                let chunk = 0;
-                while (running && programCounter < lineNumbers.length) {
+                if (running && programCounter < lineNumbers.length) {
                     const lineNum = lineNumbers[programCounter];
                     const statement = programLines[lineNum];
                     this.lastLine = lineNum;
@@ -305,15 +304,15 @@ class BasicInterpreter {
                     }
                     this.executeProgramLine(statement);
                     programCounter++;
-                    if (++chunk >= 500) {
-                        setTimeout(step, 0);
-                        return;
-                    }
                 }
             } catch (error) {
                 this.outputLine(error.message);
+                running = false;
             }
-            if (programRunning) {
+
+            if (running && programCounter < lineNumbers.length) {
+                requestAnimationFrame(step); // Let visual POKEs repaint between BASIC lines
+            } else if (programRunning) {
                 running = false;
                 programRunning = false;
                 addReadyPrompt();
