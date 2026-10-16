@@ -31,7 +31,22 @@
     let diskLoaded=false, writesBlocked=false, lastSavedRaw=null, importRequest=0;
     const PAINT_W=128, PAINT_H=56, paintColors=['#ffffff','#111111','#880000','#00aa55','#0000aa','#aa44cc','#eeee77','#0088ff'];
     let painting=null, paintSurface=null;
-    let mountedD64=null, d64Picker=null, d64Request=0;
+    let mountedD64=null, d64Picker=null, d64Request=0, nativeDocument=null;
+    function decodeGeoWriteText(data,label){
+        let text='',unsupported=0,images=0;
+        for(let i=0;i<data.length;){
+            const code=data[i];if(code===0)break;
+            const length=code===17?27:code===23?4:code===16?5:1;
+            if(i+length>data.length)throw new Error(label+': truncated formatting escape.');
+            if(code===16){text+='\n[Picture omitted]\n';images++;}
+            else if(code===9)text+='\t';else if(code===13)text+='\n';else if(code===12)text+='\n[Page break]\n';
+            else if(code>=32&&code<=126)text+=String.fromCharCode(code);
+            else if(length===1){text+='\uFFFD';unsupported++;}
+            i+=length;
+        }
+        return {text,unsupported,images};
+    }
+    function isGeoWrite(file){return file.geosType===7&&file.structure==='VLIR'&&/^Write Image V2\.[01]$/i.test((file.className||'').replace(/\s+/g,' ').trim());}
     function parseD64(input) {
         const bytes=new Uint8Array(input);
         if(![174848,175531].includes(bytes.length))throw new Error('Use a 35-track D64 image.');
@@ -58,7 +73,8 @@
                 const e=block.subarray(slot*32,slot*32+32),dos=e[2]&7;if(!dos)continue;
                 const name=diskText(e.subarray(5,21))||'(unnamed)',blocks=e[30]+e[31]*256;
                 const file={id:result.length,name,geosType:0,type:['DEL','SEQ','PRG','USR','REL'][dos]||'unknown',size:blocks,blocks,icon:'readme',
-                    diskId:'d64-view',structure:'sequential',locked:!!(e[2]&64),native:true,dosType:dos,dosClosed:!!(e[2]&128),border};
+                    diskId:'d64-view',structure:'sequential',locked:!!(e[2]&64),native:true,dosType:dos,dosClosed:!!(e[2]&128),border,
+                    startTrack:e[3],startSector:e[4],infoTrack:e[21],infoSector:e[22]};
                 if(!file.dosClosed)warnings.push(name+': file was not closed.');
                 if(isGeos&&e[21]&&e[24]>0&&e[24]<=15&&e[23]<=1){
                     file.geosType=e[24];file.type=fileTypes[e[24]];file.structure=e[23]?'VLIR':'sequential';
@@ -80,11 +96,43 @@
         if(isGeos&&bam[171]){
             try{if(!seen.has(bam[171]+'/'+bam[172]))entries(sector(bam[171],bam[172]),true);}catch(error){warnings.push('Border directory unavailable.');}
         }
+        function readGeoWrite(file){
+            if(!result.includes(file)||!isGeoWrite(file))throw new Error('This geoWrite format is not supported.');
+            function checkedSector(track,number){
+                const block=sector(track,number),offset=sectors.slice(0,track-1).reduce((a,b)=>a+b,0)+number;
+                if(bytes.length===175531&&bytes[174848+offset]!==1)throw new Error('A required sector has a recorded disk error.');return block;
+            }
+            const header=checkedSector(file.infoTrack,file.infoSector),index=checkedSector(file.startTrack,file.startSector),claimed=new Set(['18/0',file.startTrack+'/'+file.startSector,file.infoTrack+'/'+file.infoSector,...seen]),items=[],notes=[];
+            if(index[0]!==0||index[1]!==255)throw new Error('Invalid VLIR index sector.');
+            const startPage=header[137]+256*header[138];let pageGap=false;
+            function readRecord(track,number,label){
+                const data=[];
+                while(track){
+                    const key=track+'/'+number;if(claimed.has(key))throw new Error(label+': repeated or overlapping sector.');claimed.add(key);
+                    const block=checkedSector(track,number),end=block[0]===0?block[1]+1:256;
+                    if(end<2)throw new Error(label+': invalid final sector length.');
+                    data.push(...block.subarray(2,end));[track,number]=block;
+                }
+                return new Uint8Array(data);
+            }
+            for(let record=0;record<=62;record++){
+                const track=index[2+record*2],number=index[3+record*2];
+                if(track===0){if(number!==0&&number!==255)throw new Error('Invalid VLIR record pointer.');if(number===0)break;if(record<61)pageGap=true;continue;}
+                const label=record<61?'Page '+(startPage+record):record===61?'Header':'Footer';
+                if(record<61&&pageGap)notes.push(label+': earlier page record is missing.');
+                const decoded=decodeGeoWriteText(readRecord(track,number,label),label);
+                if(decoded.unsupported)notes.push(label+': '+decoded.unsupported+' unsupported character codes.');
+                if(decoded.images)notes.push(label+': '+decoded.images+' pictures omitted.');
+                items.push({label,text:decoded.text,record});
+            }
+            if(!items.some(item=>item.record<61))throw new Error('No readable page records were found.');
+            return {items,warnings:notes};
+        }
         return {files:result,diskName:diskText(bam.subarray(144,160))||'UNTITLED',freeBlocks,usedBlocks:664-freeBlocks,
-            isGeos,warnings,bytes,filename:'disk.d64'};
+            isGeos,warnings,bytes,readGeoWrite,filename:'disk.d64'};
     }
     function previewD64(input,filename='disk.d64') {
-        if(state.launch)return;
+        if(state.launch||nativeDocument)return;
         let image;try{image=parseD64(input);}catch(error){dialog('D64 not opened',[error.message,'The current disk is unchanged.']);return;}
         image.filename=filename;
         dialog('Open D64',[image.diskName,image.files.length+' files - read only',image.warnings.length?image.warnings.length+' metadata warnings.':'Directory ready to view.','Your web disk will be kept.'],[['Open',()=>mountD64(image)],['Cancel',closeModal]]);
@@ -97,7 +145,7 @@
         say(image.diskName+'. Read-only D64. Use disk > web disk to return.');
     }
     function returnWebDisk(redraw=true){
-        d64Request++;if(!mountedD64)return;const web=mountedD64.web;mountedD64=null;importRequest++;files.splice(0,files.length,...web.files);
+        d64Request++;if(!mountedD64)return;nativeDocument=null;const web=mountedD64.web;mountedD64=null;importRequest++;files.splice(0,files.length,...web.files);
         for(const key of ['diskId','diskName','trash','note','page','view','diskOpen'])state[key]=web[key];state.selected=new Set(web.selected);
         if(redraw){closeModal();say('Returned to your web disk.');}
     }
@@ -321,23 +369,25 @@
     }
     function dialog(title,lines,buttons=[['OK',closeModal]],kind='message',value='') {lastFileClick=null;if(editor){editor.remove();editor=null;}if(kind!=='paint'&&paintSurface){paintSurface.remove();paintSurface=null;}state.menu=null;state.modal={title,lines,buttons,kind,value};say(title+'. '+lines.join(' '));render();focusFirst();}
     function closeModal() {
+        if(nativeDocument&&state.modal?.kind!=='geowrite'){showNativeDocument(nativeDocument.index);return;}
         if(painting){if(state.modal?.kind==='paint')confirmPaint(finishCloseModal);else showPaint();return;}
         if(state.documentEdit){if(state.modal?.kind==='document')confirmDocumentAction(()=>finishCloseModal());else showDocumentEditor();return;}
         finishCloseModal();
     }
     function finishCloseModal() {
+        const nativeFocus=nativeDocument?'file-'+nativeDocument.fileId:null;nativeDocument=null;
         painting=null;if(paintSurface){paintSurface.remove();paintSurface=null;}
         state.documentEdit=null;
         state.modal=null;if(editor){editor.remove();editor=null;}
         const saved=state.launch?.desktop;state.launch=null;
         if(saved){state.page=saved.page;state.view=saved.view;state.diskId=saved.diskId;state.diskOpen=saved.diskOpen;state.selected=new Set(saved.selected);}
         render();
-        const key=saved?.focusKey||'menu-geos';
+        const key=saved?.focusKey||nativeFocus||'menu-geos';
         const target=[...controls.children].find(el=>el.dataset.key===key)||controls.querySelector('[data-key="menu-geos"]');if(target)target.focus();
     }
     function focusFirst() {const target=editor||paintSurface||controls.querySelector('[data-modal="true"]');if(target)target.focus();}
     function drawModal() {
-        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(['note','reader','document'].includes(m.kind)){x=40;y=24;w=240;h=161;}if(m.kind==='paint'){x=4;y=14;w=312;h=183;}
+        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(['note','reader','document','geowrite'].includes(m.kind)){x=40;y=24;w=240;h=161;}if(m.kind==='paint'){x=4;y=14;w=312;h=183;}
         // The active dialog blocks every desktop control, including keyboard focus.
         controls.replaceChildren();fill(x+3,y+3,w,h,INK);fill(x,y,w,h);box(x,y,w,h);box(x+2,y+2,w-4,h-4);fill(x+3,y+3,w-6,12,INK);center(m.title,x+4,y+5,w-8,PAPER);
         const modalControl=(key,name,bx,by,bw,fn)=>{button(key,name,bx,by,bw,fn);controls.lastElementChild.dataset.modal='true';};
@@ -346,14 +396,21 @@
             fill(x+10,y+23,w-20,16);box(x+10,y+23,w-20,16);const display=calc.display.slice(0,18);text(display,x+w-15-width(display),y+28);
             const keys=['7','8','9','/','4','5','6','*','1','2','3','-','C','0','=','+'];keys.forEach((key,i)=>modalControl('calc-'+key,key,x+10+(i%4)*35,y+47+Math.floor(i/4)*23,29,()=>calculate(key)));
             modalControl('modal-close','Close',x+48,y+h-20,60,closeModal);
-        } else if(['note','reader','document'].includes(m.kind)) {
-            if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label',m.kind==='reader'?'Document text':m.kind==='document'?'Edit document text':'Note pad text');editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:m.kind==='document'?state.documentEdit.text:state.note;
+        } else if(['note','reader','document','geowrite'].includes(m.kind)) {
+            if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label',['reader','geowrite'].includes(m.kind)?'Document text':m.kind==='document'?'Edit document text':'Note pad text');editor.readOnly=['reader','geowrite'].includes(m.kind);editor.value=['reader','geowrite'].includes(m.kind)?m.value:m.kind==='document'?state.documentEdit.text:state.note;
                 if(m.kind==='document'){editor.maxLength=200000;editor.addEventListener('input',()=>{state.documentEdit.text=editor.value;state.documentEdit.message='';state.modal.title=documentTitle();render();});}
                 if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;const file=files.find(file=>file.id===state.launch?.fileId);if(file)file.content=state.note;persistDisk();render();});}desktop.appendChild(editor);}
             Object.assign(editor.style,{left:(x+8)+'px',top:(y+22)+'px',width:(w-16)+'px',height:'108px'});
             if(m.kind==='note')smallText(state.storageIssue?'session only - export disk':'saved to disk',x+8,y+134);
             if(m.kind==='document')smallText(state.documentEdit.message||(documentDirty()?'unsaved changes':state.documentEdit.fileId===null?'not saved yet':'saved to disk'),x+8,y+134);
-            if(m.kind==='document'){
+            if(m.kind==='geowrite'){
+                const d=nativeDocument;smallText(d.data.items[d.index].label+' - text only'+(d.data.warnings.length?' - see Details':''),x+8,y+134);
+                modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
+                modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
+                modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Plain text preview. Fonts, styles and page layout are omitted. Pictures are represented by placeholders.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
+            } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);
                 modalControl('document-save','Save',x+55,y+h-21,42,()=>saveDocument());
                 modalControl('document-export','Export',x+104,y+h-21,50,exportDocument);
@@ -362,7 +419,7 @@
                 modalControl('document-new','New',x+8,y+h-21,60,newDocument);
                 modalControl('document-save-as','Save as',x+84,y+h-21,68,()=>{beginDocument(null,state.note);promptDocumentName(()=>showDocumentEditor(),true);});
                 modalControl('modal-close','Close',x+168,y+h-21,60,closeModal);
-            } else modalControl('modal-close','Close',x+w-67,y+h-21,58,closeModal);
+            } else modalControl('modal-close',m.buttons[0][0],x+w-67,y+h-21,58,m.buttons[0][1]);
         } else {
             m.lines.forEach((value,i)=>center(value,x+7,y+24+i*12,w-14));
             if(m.kind==='rename'&&!editor){editor=element('input','geos-editor');editor.type='text';editor.maxLength=16;editor.value=m.value;editor.setAttribute('aria-label',m.title);Object.assign(editor.style,{left:(x+16)+'px',top:(y+50)+'px',width:(w-32)+'px',height:'17px'});desktop.appendChild(editor);editor.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();m.buttons[0][1]();}});}
@@ -569,7 +626,7 @@
         state.menu=null;
         if(selectedFiles().length>1){dialog('Open',['No multiple file operation for','this feature.']);return;}
         if(!state.diskOpen||!available().includes(file)){dialog('Open',['This file is not on','the current disk.']);return;}
-        if(mountedD64){nativeFileInfo(file,true);return;}
+        if(mountedD64){if(isGeoWrite(file))openNativeDocument(file);else nativeFileInfo(file,true);return;}
         switch(file.geosType) {
             case GEOS_TYPE.ACCESSORY:
             case GEOS_TYPE.APPLICATION:
@@ -611,6 +668,16 @@
             state.selected.delete(file.id);state.page=Math.min(state.page,pages()-1);closeModal();say(file.size+' Kbytes reclaimed.');
         }],['Cancel',showWasteBasket]]);
         state.modal.cancel=showWasteBasket;
+    }
+    function showNativeDocument(index=0){
+        const d=nativeDocument;d.index=index;dialog(d.name,[],[['Close',closeModal]],'geowrite',d.data.items[index].text);say(d.name+'. '+d.data.items[index].label+'. Read-only plain text.');
+    }
+    function openNativeDocument(file){
+        let data;try{data=mountedD64.readGeoWrite(file);}catch(error){dialog('Document not opened',[file.name,'The document could not be decoded.','No disk data was changed.'],[['Details',()=>dialog('Decode details',[],[['Close',closeModal]],'reader',error.message)],['Close',closeModal]]);return;}
+        nativeDocument={fileId:file.id,name:file.name,data,index:0};showNativeDocument();
+    }
+    function exportNativeDocument(){
+        const d=nativeDocument;if(!d)return;downloadFile(d.data.items.map(item=>'--- '+item.label+' ---\n'+item.text).join('\n\n'),d.name.replace(/[\\/:*?"<>|]/g,'_')+'.txt','text/plain;charset=utf-8');say('Plain text downloaded.');
     }
     function nativeFileInfo(file,opening=false){
         dialog(opening?'Native GEOS file':'File info',[file.name,file.type+' - '+file.blocks+' blocks',file.structure+(file.locked?' - protected':''),
@@ -672,12 +739,13 @@
         d64Picker=element('input');d64Picker.type='file';d64Picker.accept='.d64';d64Picker.hidden=true;root.appendChild(d64Picker);
         d64Picker.addEventListener('change',async()=>{const file=d64Picker.files?.[0],request=++d64Request;d64Picker.value='';if(!file)return;
             if(![174848,175531].includes(file.size)){dialog('D64 not opened',['Use a 35-track D64 image.','The current disk is unchanged.']);return;}
-            try{const bytes=await file.arrayBuffer();if(state.phase==='desktop'&&request===d64Request&&!state.launch)previewD64(bytes,file.name);}catch(error){if(state.phase==='desktop'&&request===d64Request&&!state.launch)dialog('D64 not opened',['This image could not be read.','The current disk is unchanged.']);}});
+            try{const bytes=await file.arrayBuffer();if(state.phase==='desktop'&&request===d64Request&&!state.launch&&!nativeDocument)previewD64(bytes,file.name);}catch(error){if(state.phase==='desktop'&&request===d64Request&&!state.launch&&!nativeDocument)dialog('D64 not opened',['This image could not be read.','The current disk is unchanged.']);}});
         desktop.append(canvas,controls,status);viewport.append(desktop);monitor.append(viewport);root.append(monitor);document.body.append(root);
         desktop.addEventListener('click',e=>{if(e.target===canvas||e.target===controls){state.menu=null;deselect();}});
         window.addEventListener('resize',fit);
     }
     function leave() {
+        nativeDocument=null;
         returnWebDisk(false);d64Request++;
         painting=null;if(paintSurface){paintSurface.remove();paintSurface=null;}
         timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);importRequest++;state.phase='off';state.menu=null;state.modal=null;state.launch=null;state.documentEdit=null;lastFileClick=null;
