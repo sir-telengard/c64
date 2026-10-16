@@ -488,6 +488,7 @@ const IDLE_DELAY = 60000; // 60s idle -> maze screensaver
 
 function resetIdleTimer() {
     clearTimeout(idleTimer);
+    if (window.GEOS && window.GEOS.active) return;
     idleTimer = setTimeout(() => {
         if (!mazeInterval && !programRunning) startMaze();
     }, IDLE_DELAY);
@@ -690,6 +691,21 @@ document.addEventListener("keydown", (event) => {
                 currentTextColor = colors[colorIndex];
                 updateCursorColor(currentTextColor);
             }
+        }
+        else if (/^LOAD\s*"GEOS"\s*,\s*8\s*,\s*1\s*$/.test(inputText.trim())) {
+            clearTimeout(idleTimer);
+            cursorLine.style.visibility = 'hidden';
+            GEOS.boot({
+                output: text => basic.outputLine(text),
+                onExit: () => {
+                    inputBuffer = [];
+                    cursorLine.style.visibility = '';
+                    updateCursorDisplay();
+                    addReadyPrompt();
+                    resetIdleTimer();
+                }
+            });
+            needsReadyPrompt = false;
         }
         else if (/^LOAD\s*"BLUESKY"\s*,\s*8/.test(inputText)) {
             basic.outputLine('SEARCHING FOR BLUESKY');
