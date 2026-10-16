@@ -33,6 +33,26 @@
     let painting=null, paintSurface=null;
     let mountedD64=null, d64Picker=null, d64Request=0, nativeDocument=null;
     let fontPicker=null,fontRequest=0,fontSerial=0;const loadedFonts=new Map();
+    function geoWriteTextWidth(value,run){
+        const face=loadedFonts.get(run.fontId+'/'+run.pointSize);
+        if(face&&[...value].every(c=>c.charCodeAt(0)>=32&&c.charCodeAt(0)<=126))return [...value].reduce((sum,c)=>{const i=c.charCodeAt(0)-32;return sum+face.font.positions[i+1]-face.font.positions[i];},0);
+        ctx.font=(run.style&16?'italic ':'')+(run.style&64?'bold ':'')+run.pointSize+'px Arial';return ctx.measureText(value).width;
+    }
+    function geoWriteTabWidth(x,width,ruler,prefixWidth,defaultWidth){
+        const scale=width/(ruler.right-ruler.left),stop=ruler.tabs.find(t=>(t.position-ruler.left)*scale>x+.01&&t.position<ruler.right);
+        if(stop)return Math.max(0,(stop.position-ruler.left)*scale-x-(stop.decimal?prefixWidth:0));
+        const step=Math.max(1,defaultWidth);return Math.max(0,(Math.floor(x/step)+1)*step-x);
+    }
+    function layoutGeoWriteTabs(tabs){
+        const scale=editor.getBoundingClientRect().width/editor.offsetWidth||1;
+        const blocks=new Map();for(const tab of tabs){tab.node.style.width='0px';if(!blocks.has(tab.block)){blocks.set(tab.block,tab.block.style.textAlign);tab.block.style.textAlign='left';}}
+        for(const tab of tabs){
+            const rect=tab.block.getBoundingClientRect(),current=(tab.node.getBoundingClientRect().left-rect.left)/scale;
+            const prefix=tab.prefix.reduce((sum,p)=>sum+geoWriteTextWidth(p.text,p.run),0);
+            tab.node.style.width=geoWriteTabWidth(current,rect.width/scale,tab.ruler,prefix,geoWriteTextWidth('    ',tab.run))+'px';
+        }
+        for(const [block,align] of blocks)block.style.textAlign=align;
+    }
     function decodeGeosFont(data,fontId,pointSize,name){
         const word=i=>data[i]+256*data[i+1];
         if(data.length<200||!Number.isInteger(fontId)||fontId<0||fontId>1023||pointSize<1||pointSize>63)throw new Error('Invalid font metadata.');
@@ -104,12 +124,12 @@
         return {width,height,rowBytes,bitmap};
     }
     function decodeGeoWriteText(data,label){
-        let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0,rulerWarnings=0,paragraph=null;
-        let ruler={left:0,right:480,first:0,align:'left'};const runs=[],paragraphs=[];
+        let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0,rulerWarnings=0,tabCount=0,paragraph=null;
+        let ruler={left:0,right:480,first:0,align:'left',tabs:[]};const runs=[],paragraphs=[];
         function ensureParagraph(){if(!paragraph){paragraph={ruler,runs:[],ended:false};paragraphs.push(paragraph);}return paragraph;}
         function append(value){
             text+=value;const p=ensureParagraph(),last=p.runs[p.runs.length-1];
-            if(last&&!last.picture&&last.fontId===fontId&&last.pointSize===pointSize&&last.style===style)last.text+=value;
+            if(last&&!last.picture&&!last.tab&&last.fontId===fontId&&last.pointSize===pointSize&&last.style===style)last.text+=value;
             else {const run={text:value,fontId,pointSize,style};runs.push(run);p.runs.push(run);}
         }
         for(let i=0;i<data.length;){
@@ -118,18 +138,21 @@
             if(i+length>data.length)throw new Error(label+': truncated formatting escape.');
             if(code===17){
                 const word=offset=>data[i+offset]+256*data[i+offset+1],left=word(1),right=word(3),first=word(21);
-                if(left>=right||right>640||first>=right){rulerWarnings++;ruler={left:0,right:480,first:0,align:'left'};}
-                else ruler={left,right,first,align:['left','center','right','justify'][data[i+23]&3]};
+                const tabs=[];let previous=0,badTabs=false;
+                for(let slot=0;slot<8;slot++){const code=word(5+slot*2),position=code&32767;if(!position)continue;if(position>640||position<previous){badTabs=true;continue;}previous=position;if(!tabs.some(t=>t.position===position))tabs.push({position,decimal:!!(code&32768)});}
+                if(badTabs)rulerWarnings++;
+                if(left>=right||right>640||first>=right){rulerWarnings++;ruler={left:0,right:480,first:0,align:'left',tabs:[]};}
+                else ruler={left,right,first,align:['left','center','right','justify'][data[i+23]&3],tabs};
                 if(paragraph)rulerWarnings++; // Mid-paragraph rulers apply at the next paragraph boundary.
             }
             else if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];}
             else if(code===16){const value='\n[Picture omitted]\n',run={text:value,fontId,pointSize,style,picture:{width:data[i+1]*8,height:data[i+2]+256*data[i+3],record:data[i+4]}};text+=value;runs.push(run);ensureParagraph().runs.push(run);images++;}
-            else if(code===9)append('\t');else if(code===13){append('\n');paragraph.ended=true;paragraph=null;}else if(code===12)append('\n[Page break]\n');
+            else if(code===9){if(++tabCount>512)append('\t');else{const run={text:'\t',fontId,pointSize,style,tab:true};text+='\t';runs.push(run);ensureParagraph().runs.push(run);}}else if(code===13){append('\n');paragraph.ended=true;paragraph=null;}else if(code===12)append('\n[Page break]\n');
             else if(code>=32&&code<=126)append(String.fromCharCode(code));
             else if(length===1){append('\uFFFD');unsupported++;}
             i+=length;
         }
-        return {text,runs,paragraphs,rulerWarnings,unsupported,images};
+        return {text,runs,paragraphs,rulerWarnings,tabOverflow:tabCount>512,unsupported,images};
     }
     function isGeoWrite(file){return file.geosType===7&&file.structure==='VLIR'&&/^Write Image V2\.[01]$/i.test((file.className||'').replace(/\s+/g,' ').trim());}
     function parseD64(input) {
@@ -209,6 +232,7 @@
                 const decoded=decodeGeoWriteText(readRecord(track,number,label),label);
                 if(decoded.unsupported)notes.push(label+': '+decoded.unsupported+' unsupported character codes.');
                 if(decoded.rulerWarnings)notes.push(label+': '+decoded.rulerWarnings+' invalid or misplaced rulers; paragraph layout approximated.');
+                if(decoded.tabOverflow)notes.push(label+': tabs after the first 512 use browser spacing.');
                 items.push({label,text:decoded.text,runs:decoded.runs,paragraphs:decoded.paragraphs,record});
             }
             if(!items.some(item=>item.record<61))throw new Error('No readable page records were found.');
@@ -548,12 +572,20 @@
         } else if(['note','reader','document','geowrite'].includes(m.kind)) {
             if(!editor){editor=element(m.kind==='geowrite'?'div':'textarea',m.kind==='geowrite'?'geos-editor geos-rich-document':'geos-editor');editor.setAttribute('aria-label',['reader','geowrite'].includes(m.kind)?'Document text':m.kind==='document'?'Edit document text':'Note pad text');
                 if(m.kind==='geowrite'){
-                    editor.tabIndex=0;editor.setAttribute('role','document');
+                    editor.tabIndex=0;editor.setAttribute('role','document');editor.geosTabs=[];
                     const documentData=nativeDocument.data;
                     for(const paragraph of documentData.items[nativeDocument.index].paragraphs){
                         const block=element('p','geos-paragraph'),ruler=paragraph.ruler;
                         Object.assign(block.style,{textAlign:ruler.align,marginLeft:(ruler.left/documentData.pageWidth*100)+'%',marginRight:((documentData.pageWidth-ruler.right)/documentData.pageWidth*100)+'%',textIndent:((ruler.first-ruler.left)/(ruler.right-ruler.left)*100)+'%'});
-                        for(const run of paragraph.runs){
+                        for(const [runIndex,run] of paragraph.runs.entries()){
+                        if(run.tab){
+                            const node=element('span','geos-tab');node.textContent='\t';node.style.fontSize=run.pointSize+'px';
+                            const prefix=[];for(let following=runIndex+1;following<paragraph.runs.length;following++){
+                                const next=paragraph.runs[following];
+                                if(next.tab||next.picture)break;const end=next.text.search(/[.\t\n]/),value=end<0?next.text:next.text.slice(0,end);if(value)prefix.push({text:value,run:next});if(end>=0)break;
+                            }
+                            block.appendChild(node);editor.geosTabs.push({node,block,ruler,run,prefix});continue;
+                        }
                         if(run.bitmap){
                             const picture=run.bitmap,image=element('canvas','geos-inline-picture');image.width=picture.width;image.height=picture.height;image.setAttribute('role','img');image.setAttribute('aria-label','Embedded picture, '+picture.width+' by '+picture.height+' pixels');
                             const bitmapContext=image.getContext('2d'),pixels=bitmapContext.createImageData(picture.width,picture.height);
@@ -574,6 +606,7 @@
                 if(m.kind==='document'){editor.maxLength=200000;editor.addEventListener('input',()=>{state.documentEdit.text=editor.value;state.documentEdit.message='';state.modal.title=documentTitle();render();});}
                 if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;const file=files.find(file=>file.id===state.launch?.fileId);if(file)file.content=state.note;persistDisk();render();});}desktop.appendChild(editor);}
             Object.assign(editor.style,{left:(x+8)+'px',top:(y+22)+'px',width:(w-16)+'px',height:'108px'});
+            if(m.kind==='geowrite')layoutGeoWriteTabs(editor.geosTabs);
             if(m.kind==='note')smallText(state.storageIssue?'session only - export disk':'saved to disk',x+8,y+134);
             if(m.kind==='document')smallText(state.documentEdit.message||(documentDirty()?'unsaved changes':state.documentEdit.fileId===null?'not saved yet':'saved to disk'),x+8,y+134);
             if(m.kind==='geowrite'){
@@ -583,7 +616,7 @@
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Original page layout, custom tab stops, line spacing, reverse, outline, superscript and subscript are omitted. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Ruler tabs support regular and decimal (period) alignment. After the last usable stop, a four-space fallback keeps text readable. Wrapped or non-left-aligned tabbed lines remain approximations. Original page layout, line spacing, reverse, outline, superscript and subscript are omitted. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);

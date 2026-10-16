@@ -9,7 +9,7 @@ function mount(e,content){const f=fixture({records:new Map([[0,page(content)]])}
 test('rulers decode all four alignments with little-endian margins and first-line positions',()=>{
     const e=desktop();for(const [align,name] of ['left','center','right','justify'].entries()){
         const d=decode(e,ruler({left:80,right:560,first:120,align}),text('hello\rnext'));
-        assert.equal(d.paragraphs.length,2);assert.equal(d.text,'hello\nnext');assert.deepEqual(JSON.parse(JSON.stringify(d.paragraphs[0].ruler)),{left:80,right:560,first:120,align:name});assert.equal(d.paragraphs[1].ruler,d.paragraphs[0].ruler);assert.equal(d.rulerWarnings,0);
+        assert.equal(d.paragraphs.length,2);assert.equal(d.text,'hello\nnext');assert.deepEqual(JSON.parse(JSON.stringify(d.paragraphs[0].ruler)),{left:80,right:560,first:120,align:name,tabs:[]});assert.equal(d.paragraphs[1].ruler,d.paragraphs[0].ruler);assert.equal(d.rulerWarnings,0);
     }
 });
 test('paragraphs preserve blank lines and mixed text styles without losing export text',()=>{
@@ -19,7 +19,7 @@ test('paragraphs preserve blank lines and mixed text styles without losing expor
 test('invalid rulers fall back safely and later valid rulers restore paragraph layout',()=>{
     const e=desktop();for(const bad of [{left:100,right:100},{right:65535},{left:100,right:480,first:500}]){
         const d=decode(e,ruler(bad),text('first\r'),ruler({align:2}),text('second'));
-        assert.equal(d.rulerWarnings,1);assert.deepEqual(JSON.parse(JSON.stringify(d.paragraphs[0].ruler)),{left:0,right:480,first:0,align:'left'});assert.equal(d.paragraphs[1].ruler.align,'right');
+        assert.equal(d.rulerWarnings,1);assert.deepEqual(JSON.parse(JSON.stringify(d.paragraphs[0].ruler)),{left:0,right:480,first:0,align:'left',tabs:[]});assert.equal(d.paragraphs[1].ruler.align,'right');
     }
 });
 test('a misplaced ruler applies to the next paragraph and never rewrites text',()=>{

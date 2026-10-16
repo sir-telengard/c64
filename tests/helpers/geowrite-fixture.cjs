@@ -1,5 +1,5 @@
 const tracks=Array.from({length:35},(_,i)=>i<17?21:i<24?19:i<30?18:17);
-function ruler({left=0,right=480,first=left,align=0}={}){const data=Buffer.alloc(27);data[0]=17;data.writeUInt16LE(left,1);data.writeUInt16LE(right,3);data.writeUInt16LE(first,21);data[23]=align;return data;}
+function ruler({left=0,right=480,first=left,align=0,tabs=[]}={}){const data=Buffer.alloc(27);data[0]=17;data.writeUInt16LE(left,1);data.writeUInt16LE(right,3);data.writeUInt16LE(first,21);data[23]=align;tabs.slice(0,8).forEach((t,i)=>data.writeUInt16LE(typeof t==='number'?t:t.position|(t.decimal?32768:0),5+i*2));return data;}
 function page(text){return Buffer.concat([ruler(),Buffer.from([23,0,65,64]),Buffer.isBuffer(text)?text:Buffer.from(text,'ascii'),Buffer.from([0])]);}
 function fixture({records=new Map([[0,page('A constructed geoWrite reader test.\rFirst page.\tTab preserved.')],[1,page('Second page.\rThe original image stays read only.')],[61,page('Sample header')],[62,page('Sample footer')]]),version='2.1',startPage=1}={}){
     const bytes=Buffer.alloc(174848);
