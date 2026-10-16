@@ -1,5 +1,4 @@
-// Select the cursor and cursor-line elements
-const cursor = document.querySelector(".cursor");
+// Select the cursor-line element
 const cursorLine = document.querySelector(".cursor-line");
 
 // Track the input state
@@ -445,8 +444,10 @@ function printDirectory() {
 
 // Update cursor color function
 function updateCursorColor(color) {
-    cursor.style.color = color;
-    cursor.style.backgroundColor = color; // Ensure the cursor matches text color
+    const currentCursor = cursorLine.querySelector('.cursor');
+    if (!currentCursor) return;
+    currentCursor.style.color = color;
+    currentCursor.style.backgroundColor = color; // Ensure the cursor matches text color
 }
 
 // Update cursor and text display
