@@ -136,7 +136,7 @@
         geos:[['GEOS info','geos-info'],['deskTop info','desktop-info'],null,['select printer','printer'],['select input','input'],null,['preference mgr','preferences'],['pad color mgr','colors'],['alarm clock','clock'],['note pad','note'],['calculator','calculator']],
         file:[['new text','new-text'],['new picture','new-picture'],['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
         view:[['by icon','view-icon'],['by size','view-size'],['by type','view-type'],['by date','view-date'],['by name','view-name']],
-        disk:[['open','disk-open'],['close','disk-close'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
+        disk:[['open','disk-open'],['close','disk-close'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],['empty basket','trash-empty'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
         select:[['all','select-all'],['none','select-none']],
         page:[['next','page-next'],['previous','page-previous'],['first','page-first'],['last','page-last']],
         options:[['shortcuts','shortcuts'],['BASIC','quit']]
@@ -231,7 +231,7 @@
         control('page-previous','Previous page',1,128,22,10,()=>act('page-previous'),{disabled:!state.diskOpen||state.page===0});
         icon('drive',281,26);text('A',286,31);label('GEOS',273,48,43,state.diskOpen);
         control('drive-a','Open GEOS disk in drive A',274,23,43,36,()=>act('disk-open'));
-        icon('trash',281,157);if(state.trash)fill(287,166,9,7,INK);control('trash','Waste basket',274,153,43,35,()=>state.trash?dialog('Waste basket',[state.trash.name,'Restore this file?'],[['Restore',()=>{state.trash=null;persistDisk();closeModal();}],['Cancel',closeModal]]):dialog('Waste basket',['The waste basket is empty.']));
+        icon('trash',281,157);if(state.trash)fill(287,166,9,7,INK);control('trash','Waste basket',274,153,43,35,showWasteBasket);
         text('GEOS',276,186);text('2.0',284,194);
         text('deskTop',8,185);text('V2.0',8,194);text(state.storageIssue?'session only':'disk saved',80,185);
     }
@@ -504,6 +504,32 @@
             default:cannotOpen();
         }
     }
+    function showWasteBasket() {
+        const file=state.trash;
+        if(!file){dialog('Waste basket',['The waste basket is empty.']);return;}
+        dialog('Waste basket',[file.name,file.size+' Kbytes held','Restore or permanently delete?'],[['Restore',()=>{
+            if(state.trash!==file){showWasteBasket();return;}
+            state.trash=null;
+            if(!persistDisk()){state.trash=file;dialog('Restore not saved',['The file is still in the basket.','Export your disk for backup.']);return;}
+            closeModal();
+        }],['Empty',emptyWasteBasket],['Cancel',closeModal]]);
+    }
+    function emptyWasteBasket() {
+        const file=state.trash;
+        if(!file){showWasteBasket();return;}
+        if(file.locked){dialog('Empty waste basket',['This file is write protected.']);return;}
+        dialog('Empty waste basket',[file.name,'Permanently delete this file?','Frees '+file.size+' Kbytes.','Restore will no longer be available.'],[['Empty',()=>{
+            const index=files.indexOf(file);
+            if(state.trash!==file||index<0||file.locked){showWasteBasket();return;}
+            files.splice(index,1);state.trash=null;
+            if(!persistDisk()){
+                files.splice(index,0,file);state.trash=file;
+                dialog('Empty not saved',['The file is still in the basket.','No disk space was reclaimed.','Export your disk for backup.']);return;
+            }
+            state.selected.delete(file.id);state.page=Math.min(state.page,pages()-1);closeModal();say(file.size+' Kbytes reclaimed.');
+        }],['Cancel',showWasteBasket]]);
+        state.modal.cancel=showWasteBasket;
+    }
     function act(action) {
         state.menu=null;state.hover=-1;
         const selected=selectedFiles(),file=selected[0];
@@ -523,6 +549,7 @@
             case 'disk-rename':rename('Rename disk',state.diskName,name=>{state.diskName=name;});return;
             case 'disk-info':dialog('Disk info',[state.diskName,'Drive A: 1541   Device 8','165 Kbytes total',state.storageIssue||'Saved in this browser.']);return;
             case 'disk-export':exportDisk();break;
+            case 'trash-empty':emptyWasteBasket();return;
             case 'disk-import':diskPicker.click();break;
             case 'disk-previous':try{const backup=localStorage.getItem(BACKUP_KEY);if(backup===null)dialog('Previous disk',['No previous copy is available.']);else previewImport(backup);}catch(e){dialog('Previous disk',['Browser storage is unavailable.']);}return;
             case 'validate':dialog('Validate',['Disk validated.','No errors found.']);return;
