@@ -693,19 +693,23 @@ document.addEventListener("keydown", (event) => {
             }
         }
         else if (/^LOAD\s*"GEOS"\s*,\s*8\s*,\s*1\s*$/.test(inputText.trim())) {
-            clearTimeout(idleTimer);
-            cursorLine.style.visibility = 'hidden';
-            GEOS.boot({
-                output: text => basic.outputLine(text),
-                onExit: () => {
-                    inputBuffer = [];
-                    cursorLine.style.visibility = '';
-                    updateCursorDisplay();
-                    addReadyPrompt();
-                    resetIdleTimer();
-                }
-            });
-            needsReadyPrompt = false;
+            if (typeof window.GEOS?.boot !== 'function') {
+                basic.outputLine('?GEOS UNAVAILABLE - MISSING GEOS.JS');
+            } else {
+                clearTimeout(idleTimer);
+                cursorLine.style.visibility = 'hidden';
+                window.GEOS.boot({
+                    output: text => basic.outputLine(text),
+                    onExit: () => {
+                        inputBuffer = [];
+                        cursorLine.style.visibility = '';
+                        updateCursorDisplay();
+                        addReadyPrompt();
+                        resetIdleTimer();
+                    }
+                });
+                needsReadyPrompt = false;
+            }
         }
         else if (/^LOAD\s*"BLUESKY"\s*,\s*8/.test(inputText)) {
             basic.outputLine('SEARCHING FOR BLUESKY');
