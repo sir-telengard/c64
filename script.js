@@ -58,24 +58,32 @@
         return {width,height,rowBytes,bitmap};
     }
     function decodeGeoWriteText(data,label){
-        let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0;const runs=[];
+        let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0,rulerWarnings=0,paragraph=null;
+        let ruler={left:0,right:480,first:0,align:'left'};const runs=[],paragraphs=[];
+        function ensureParagraph(){if(!paragraph){paragraph={ruler,runs:[],ended:false};paragraphs.push(paragraph);}return paragraph;}
         function append(value){
-            text+=value;const last=runs[runs.length-1];
+            text+=value;const p=ensureParagraph(),last=p.runs[p.runs.length-1];
             if(last&&!last.picture&&last.fontId===fontId&&last.pointSize===pointSize&&last.style===style)last.text+=value;
-            else runs.push({text:value,fontId,pointSize,style});
+            else {const run={text:value,fontId,pointSize,style};runs.push(run);p.runs.push(run);}
         }
         for(let i=0;i<data.length;){
             const code=data[i];if(code===0)break;
             const length=code===17?27:code===23?4:code===16?5:1;
             if(i+length>data.length)throw new Error(label+': truncated formatting escape.');
-            if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];}
-            else if(code===16){const value='\n[Picture omitted]\n';text+=value;runs.push({text:value,fontId,pointSize,style,picture:{width:data[i+1]*8,height:data[i+2]+256*data[i+3],record:data[i+4]}});images++;}
-            else if(code===9)append('\t');else if(code===13)append('\n');else if(code===12)append('\n[Page break]\n');
+            if(code===17){
+                const word=offset=>data[i+offset]+256*data[i+offset+1],left=word(1),right=word(3),first=word(21);
+                if(left>=right||right>640||first>=right){rulerWarnings++;ruler={left:0,right:480,first:0,align:'left'};}
+                else ruler={left,right,first,align:['left','center','right','justify'][data[i+23]&3]};
+                if(paragraph)rulerWarnings++; // Mid-paragraph rulers apply at the next paragraph boundary.
+            }
+            else if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];}
+            else if(code===16){const value='\n[Picture omitted]\n',run={text:value,fontId,pointSize,style,picture:{width:data[i+1]*8,height:data[i+2]+256*data[i+3],record:data[i+4]}};text+=value;runs.push(run);ensureParagraph().runs.push(run);images++;}
+            else if(code===9)append('\t');else if(code===13){append('\n');paragraph.ended=true;paragraph=null;}else if(code===12)append('\n[Page break]\n');
             else if(code>=32&&code<=126)append(String.fromCharCode(code));
             else if(length===1){append('\uFFFD');unsupported++;}
             i+=length;
         }
-        return {text,runs,unsupported,images};
+        return {text,runs,paragraphs,rulerWarnings,unsupported,images};
     }
     function isGeoWrite(file){return file.geosType===7&&file.structure==='VLIR'&&/^Write Image V2\.[01]$/i.test((file.className||'').replace(/\s+/g,' ').trim());}
     function parseD64(input) {
@@ -154,7 +162,8 @@
                 if(record<61&&pageGap)notes.push(label+': earlier page record is missing.');
                 const decoded=decodeGeoWriteText(readRecord(track,number,label),label);
                 if(decoded.unsupported)notes.push(label+': '+decoded.unsupported+' unsupported character codes.');
-                items.push({label,text:decoded.text,runs:decoded.runs,record});
+                if(decoded.rulerWarnings)notes.push(label+': '+decoded.rulerWarnings+' invalid or misplaced rulers; paragraph layout approximated.');
+                items.push({label,text:decoded.text,runs:decoded.runs,paragraphs:decoded.paragraphs,record});
             }
             if(!items.some(item=>item.record<61))throw new Error('No readable page records were found.');
             const pictures=new Map();let picturePixels=0;
@@ -173,7 +182,8 @@
                     picturePixels+=picture.width*picture.height;run.bitmap=picture;
                 }catch(error){run.pictureError=error.message;notes.push(item.label+', picture '+ref.record+': '+error.message);}
             }
-            return {items,warnings:notes};
+            const pageWidth=items.some(item=>item.paragraphs.some(p=>p.ruler.right>480))?640:480;
+            return {items,pageWidth,warnings:notes};
         }
         return {files:result,diskName:diskText(bam.subarray(144,160))||'UNTITLED',freeBlocks,usedBlocks:664-freeBlocks,
             isGeos,warnings,bytes,readGeoWrite,filename:'disk.d64'};
@@ -447,7 +457,11 @@
             if(!editor){editor=element(m.kind==='geowrite'?'div':'textarea',m.kind==='geowrite'?'geos-editor geos-rich-document':'geos-editor');editor.setAttribute('aria-label',['reader','geowrite'].includes(m.kind)?'Document text':m.kind==='document'?'Edit document text':'Note pad text');
                 if(m.kind==='geowrite'){
                     editor.tabIndex=0;editor.setAttribute('role','document');
-                    for(const run of nativeDocument.data.items[nativeDocument.index].runs){
+                    const documentData=nativeDocument.data;
+                    for(const paragraph of documentData.items[nativeDocument.index].paragraphs){
+                        const block=element('p','geos-paragraph'),ruler=paragraph.ruler;
+                        Object.assign(block.style,{textAlign:ruler.align,marginLeft:(ruler.left/documentData.pageWidth*100)+'%',marginRight:((documentData.pageWidth-ruler.right)/documentData.pageWidth*100)+'%',textIndent:((ruler.first-ruler.left)/(ruler.right-ruler.left)*100)+'%'});
+                        for(const run of paragraph.runs){
                         if(run.bitmap){
                             const picture=run.bitmap,image=element('canvas','geos-inline-picture');image.width=picture.width;image.height=picture.height;image.setAttribute('role','img');image.setAttribute('aria-label','Embedded picture, '+picture.width+' by '+picture.height+' pixels');
                             const bitmapContext=image.getContext('2d'),pixels=bitmapContext.createImageData(picture.width,picture.height);
@@ -455,11 +469,13 @@
                                 const color=picture.bitmap[y*picture.rowBytes+(x>>3)]&(128>>(x&7))?0:255,offset=(y*picture.width+x)*4;
                                 pixels.data[offset]=color;pixels.data[offset+1]=color;pixels.data[offset+2]=color;pixels.data[offset+3]=255;
                             }
-                            bitmapContext.putImageData(pixels,0,0);editor.appendChild(image);continue;
+                            bitmapContext.putImageData(pixels,0,0);block.appendChild(image);continue;
                         }
-                        const span=element('span');span.textContent=run.text;
+                        const span=element('span');span.textContent=paragraph.ended&&run===paragraph.runs[paragraph.runs.length-1]?run.text.replace(/\n$/,''):run.text;
                         Object.assign(span.style,{fontSize:run.pointSize+'px',fontWeight:run.style&64?'bold':'normal',fontStyle:run.style&16?'italic':'normal',textDecoration:run.style&128?'underline':'none'});
-                        editor.appendChild(span);
+                        block.appendChild(span);
+                        }
+                        editor.appendChild(block);
                     }
                 }else {editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:m.kind==='document'?state.documentEdit.text:state.note;}
                 if(m.kind==='document'){editor.maxLength=200000;editor.addEventListener('input',()=>{state.documentEdit.text=editor.value;state.documentEdit.message='';state.modal.title=documentTitle();render();});}
@@ -472,7 +488,7 @@
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with bold, italic, underline, font sizes and monochrome pictures. A generic browser font approximates the original glyphs; one point is shown as one canvas pixel before desktop scaling. Zero-size codes use 10 pixels. Paragraph and page layout, reverse, outline, superscript and subscript are omitted. Pictures shrink to fit the viewer width; color is ignored. Unreadable pictures use placeholders and appear in the warnings below. Export downloads plain text with picture-omitted markers.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Paragraph positions scale to the viewer width; line wrapping uses a generic browser font. Original page layout, custom tab stops, line spacing, reverse, outline, superscript and subscript are omitted. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Unreadable pictures use placeholders and warnings below. Export is plain text with picture-omitted markers.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);

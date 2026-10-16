@@ -68,14 +68,14 @@ test('font size zero has a readable fallback, size 63 survives, and each page st
 });
 test('formatting renders safe selectable spans, with combined styles and plain-text export',async()=>{
     const e=desktop(),source=Buffer.concat([Buffer.from([23,0x92,0,208]),Buffer.from('<img src=x onerror=alert(1)>'),Buffer.from([23,0x8c,0,0]),Buffer.from('\rplain')]),f=fixture({records:new Map([[0,page(source)]])});
-    mount(e,f);open(e);const view=e.api.editor,[first,second]=view.children;
+    mount(e,f);open(e);const view=e.api.editor,first=view.children[0].children[0],second=view.children[1].children[0];
     assert.equal(view.tagName,'div');assert.equal(view.attributes.role,'document');assert.equal(view.tabIndex,0);assert.equal(first.tagName,'span');assert.equal(first.textContent,'<img src=x onerror=alert(1)>');assert.equal(first.children.length,0);assert.equal(first.style.fontWeight,'bold');assert.equal(first.style.fontStyle,'italic');assert.equal(first.style.textDecoration,'underline');assert.equal(first.style.fontSize,'18px');
     assert.equal(second.style.fontWeight,'normal');assert.equal(second.style.fontStyle,'normal');assert.equal(second.style.textDecoration,'none');assert.equal(second.style.fontSize,'12px');
     view.focus();e.key('Tab');assert.ok(e.api.controls.children.includes(e.document.activeElement));click(e,'geowrite-export');const text=await e.downloads.at(-1).text();assert.match(text,/<img src=x onerror=alert\(1\)>\nplain/);assert.ok(!text.includes('<span'));assert.equal(e.unload().prevented,false);
 });
 test('page navigation and Details rebuild formatting without leaking the prior page style',()=>{
     const e=desktop(),f=fixture({records:new Map([[0,page(Buffer.concat([Buffer.from([23,18,0,128]),Buffer.from('underlined')]))],[1,page(Buffer.concat([Buffer.from([23,12,0,0]),Buffer.from('normal')]))]])});
-    mount(e,f);open(e);assert.equal(e.api.editor.children[0].style.textDecoration,'underline');click(e,'geowrite-next');assert.equal(e.api.editor.children[0].style.textDecoration,'none');click(e,'geowrite-details');click(e,'modal-close');assert.equal(e.api.state.modal.kind,'geowrite');assert.equal(e.api.nativeDocument.index,1);click(e,'geowrite-prev');assert.equal(e.api.editor.children[0].style.textDecoration,'underline');
+    mount(e,f);open(e);assert.equal(e.api.editor.children[0].children[0].style.textDecoration,'underline');click(e,'geowrite-next');assert.equal(e.api.editor.children[0].children[0].style.textDecoration,'none');click(e,'geowrite-details');click(e,'modal-close');assert.equal(e.api.state.modal.kind,'geowrite');assert.equal(e.api.nativeDocument.index,1);click(e,'geowrite-prev');assert.equal(e.api.editor.children[0].children[0].style.textDecoration,'underline');
 });
 for(const [diskName,count] of [['collette.s1.d64',9],['collette.s2.d64',17]]){
     const diskPath=path.resolve(__dirname,'../GEOS/research',diskName);

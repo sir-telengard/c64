@@ -21,7 +21,7 @@ test('invalid dimensions, reserved codes and truncated patterns fail with bounde
 });
 test('image references become inline canvases in text order with exact black/white pixels',async()=>{
     const e=desktop(),f=disk(),saved=e.storage.get('c64-geos-disk');e.api.previewD64(f.bytes);click(e,'modal-0');e.api.state.selected.add(0);e.api.openFile(e.api.files[0]);
-    const nodes=e.api.editor.children;assert.equal(nodes[0].textContent,'before\n');assert.equal(nodes[1].tagName,'canvas');assert.equal(nodes[1].width,16);assert.equal(nodes[1].height,16);assert.equal(nodes[1].attributes.role,'img');assert.match(nodes[1].attributes['aria-label'],/16 by 16/);assert.equal(nodes[2].textContent,'\nafter');
+    const nodes=e.api.editor.children.flatMap(p=>p.children).filter(n=>n.tagName==='canvas'||n.textContent);assert.equal(nodes[0].textContent,'before');assert.equal(nodes[1].tagName,'canvas');assert.equal(nodes[1].width,16);assert.equal(nodes[1].height,16);assert.equal(nodes[1].attributes.role,'img');assert.match(nodes[1].attributes['aria-label'],/16 by 16/);assert.equal(nodes[2].textContent,'after');
     const pixels=e.context2d.lastImage;assert.deepEqual(Array.from(pixels.data.subarray(0,4)),[0,0,0,255]);const offset=(1*16+1)*4;assert.deepEqual(Array.from(pixels.data.subarray(offset,offset+4)),[255,255,255,255]);
     assert.equal(e.api.nativeDocument.data.warnings.length,0);click(e,'geowrite-export');assert.match(await e.downloads.at(-1).text(),/before\n\n\[Picture omitted\]\n\nafter/);assert.equal(e.storage.get('c64-geos-disk'),saved);
 });
