@@ -32,6 +32,52 @@
     const PAINT_W=128, PAINT_H=56, paintColors=['#ffffff','#111111','#880000','#00aa55','#0000aa','#aa44cc','#eeee77','#0088ff'];
     let painting=null, paintSurface=null;
     let mountedD64=null, d64Picker=null, d64Request=0, nativeDocument=null;
+    let fontPicker=null,fontRequest=0,fontSerial=0;const loadedFonts=new Map();
+    function decodeGeosFont(data,fontId,pointSize,name){
+        const word=i=>data[i]+256*data[i+1];
+        if(data.length<200||!Number.isInteger(fontId)||fontId<0||fontId>1023||pointSize<1||pointSize>63)throw new Error('Invalid font metadata.');
+        const baseline=data[0],rowBytes=word(1),height=data[3],table=word(4),bitmap=word(6);
+        if(height!==pointSize||baseline>=height||rowBytes<1||rowBytes>1024||table<8||table+192>bitmap||bitmap+rowBytes*height>data.length)throw new Error('Invalid font layout.');
+        const positions=Array.from({length:96},(_,i)=>word(table+i*2));
+        if(positions.some((v,i)=>v>rowBytes*8||(i&&v<positions[i-1])||(i&&v-positions[i-1]>64)))throw new Error('Invalid font glyph indices.');
+        return {fontId,pointSize,name,baseline,height,rowBytes,positions,bitmap:data.slice(bitmap,bitmap+rowBytes*height)};
+    }
+    // Wrap horizontal bitmap runs as rectangular TrueType contours. A native
+    // browser font keeps text selectable and uses the GEOS advance widths.
+    function geosTrueType(font){
+        const word=(a,v)=>a.push((v>>8)&255,v&255),long=(a,v)=>{word(a,v>>>16);word(a,v);},glyphs=[[]],advances=[0],bearings=[0];let maxPoints=0,maxContours=0,totalContours=0;
+        const ascent=(font.baseline+1)*64,descent=ascent-font.height*64;
+        for(let c=0;c<95;c++){
+            const start=font.positions[c],width=font.positions[c+1]-start,points=[],ends=[];
+            for(let y=0;y<font.height;y++)for(let x=0;x<width;){
+                const black=px=>!!(font.bitmap[y*font.rowBytes+((start+px)>>3)]&(128>>((start+px)&7)));
+                if(!black(x)){x++;continue;}const left=x;while(x<width&&black(x))x++;
+                if(++totalContours>24000)throw new Error('Font contour budget exceeded.');
+                points.push([left*64,ascent-y*64],[x*64,ascent-y*64],[x*64,ascent-(y+1)*64],[left*64,ascent-(y+1)*64]);ends.push(points.length-1);
+            }
+            advances.push(width*64);bearings.push(points.length?Math.min(...points.map(p=>p[0])):0);
+            maxPoints=Math.max(maxPoints,points.length);maxContours=Math.max(maxContours,ends.length);
+            const g=[];if(points.length){word(g,ends.length);word(g,bearings.at(-1));word(g,Math.min(...points.map(p=>p[1])));word(g,Math.max(...points.map(p=>p[0])));word(g,Math.max(...points.map(p=>p[1])));ends.forEach(v=>word(g,v));word(g,0);points.forEach(()=>g.push(1));
+                for(const axis of [0,1]){let previous=0;for(const p of points){word(g,p[axis]-previous);previous=p[axis];}}
+            }while(g.length%4)g.push(0);glyphs.push(g);
+        }
+        const tables=new Map(),head=[],hhea=[],maxp=[],hmtx=[],loca=[],glyf=[],os=[],post=[],cmap=[],name=[];
+        long(head,0x10000);long(head,0x10000);long(head,0);long(head,0x5f0f3cf5);word(head,1);word(head,font.pointSize*64);for(let i=0;i<4;i++)long(head,0);word(head,0);word(head,descent);word(head,Math.max(...advances));word(head,ascent);word(head,0);word(head,font.pointSize);word(head,2);word(head,1);word(head,0);
+        long(hhea,0x10000);for(const v of [ascent,descent,0,Math.max(...advances),0,0,Math.max(...advances),1,0,0,0,0,0,0,0,96])word(hhea,v);
+        long(maxp,0x10000);for(const v of [96,maxPoints,maxContours,0,0,2,0,0,0,0,0,0,0,0])word(maxp,v);
+        glyphs.forEach((g,i)=>{long(loca,glyf.length);for(const v of g)glyf.push(v);word(hmtx,advances[i]);word(hmtx,bearings[i]);});long(loca,glyf.length);
+        word(os,0);word(os,Math.round(advances.reduce((a,b)=>a+b,0)/96));for(const v of [400,5,0,0,0,0,0,0,0,0,0,64,Math.round(ascent/3),0])word(os,v);for(let i=0;i<10;i++)os.push(0);long(os,1);for(let i=0;i<3;i++)long(os,0);os.push(71,69,79,83);for(const v of [64,32,126,ascent,descent,0,ascent,-descent])word(os,v);
+        long(post,0x30000);long(post,0);word(post,-64);word(post,64);for(let i=0;i<5;i++)long(post,0);
+        word(cmap,0);word(cmap,1);word(cmap,3);word(cmap,1);long(cmap,12);for(const v of [4,32,0,4,4,1,0,126,65535,0,32,65535,-31,1,0,0])word(cmap,v);
+        const names=[[1,'GEOS Bitmap'],[2,'Regular'],[4,'GEOS Bitmap Regular'],[6,'GEOSBitmap-Regular']],strings=[];word(name,0);word(name,names.length);word(name,6+names.length*12);
+        for(const [id,value] of names){for(const v of [3,1,0x409,id,value.length*2,strings.length])word(name,v);for(const c of value)word(strings,c.charCodeAt(0));}name.push(...strings);
+        for(const [tag,data] of [['OS/2',os],['cmap',cmap],['glyf',glyf],['head',head],['hhea',hhea],['hmtx',hmtx],['loca',loca],['maxp',maxp],['name',name],['post',post]])tables.set(tag,new Uint8Array(data));
+        function checksum(data){let sum=0;for(let i=0;i<data.length;i+=4)sum=(sum+(((data[i]||0)*0x1000000)+((data[i+1]||0)<<16)+((data[i+2]||0)<<8)+(data[i+3]||0)))>>>0;return sum;}
+        const tags=[...tables.keys()].sort(),out=[];long(out,0x10000);for(const v of [tags.length,128,3,tags.length*16-128])word(out,v);let offset=12+tags.length*16,headOffset=0;
+        for(const tag of tags){const data=tables.get(tag);for(const c of tag)out.push(c.charCodeAt(0));long(out,checksum(data));long(out,offset);long(out,data.length);if(tag==='head')headOffset=offset;offset+=Math.ceil(data.length/4)*4;}
+        for(const tag of tags){for(const v of tables.get(tag))out.push(v);while(out.length%4)out.push(0);}
+        if(out.length>2000000)throw new Error('Font conversion exceeds the viewer limit.');const bytes=new Uint8Array(out);new DataView(bytes.buffer).setUint32(headOffset+8,(0xb1b0afba-checksum(bytes))>>>0);return bytes;
+    }
     function decodePhotoScrap(data){
         if(data.length<3)throw new Error('Missing picture dimensions.');
         const rowBytes=data[0],height=data[1]+256*data[2],width=rowBytes*8,size=rowBytes*height;
@@ -185,8 +231,54 @@
             const pageWidth=items.some(item=>item.paragraphs.some(p=>p.ruler.right>480))?640:480;
             return {items,pageWidth,warnings:notes};
         }
+        function readFonts(){
+            const fonts=[],notes=[];
+            function fontSector(track,number){const block=sector(track,number),offset=sectors.slice(0,track-1).reduce((a,b)=>a+b,0)+number;if(bytes.length===175531&&bytes[174848+offset]!==1)throw new Error('Recorded font sector error.');return block;}
+            for(const file of result.filter(f=>f.geosType===8&&f.structure==='VLIR')){
+                try{
+                    const header=fontSector(file.infoTrack,file.infoSector),index=fontSector(file.startTrack,file.startSector),id=header[128]+256*header[129];
+                    if(!file.nativeIcon||id>1023||index[0]!==0||index[1]!==255)throw new Error('Invalid font header or index.');
+                    const claimed=new Set(['18/0',...seen,file.infoTrack+'/'+file.infoSector,file.startTrack+'/'+file.startSector]);
+                    for(let slot=0;slot<15;slot++){
+                        const code=header[130+slot*2]+256*header[131+slot*2];if(!code)continue;const size=code&63;
+                        try{
+                            if(!size||(code>>6)!==id)throw new Error('Font ID/size table mismatch.');
+                            let track=index[2+size*2],number=index[3+size*2];if(!track)throw new Error('Font size record is missing.');
+                            const payload=[];
+                            while(track){
+                                const key=track+'/'+number;if(claimed.has(key))throw new Error('Repeated or overlapping font sector.');claimed.add(key);
+                                const block=fontSector(track,number);
+                                const end=block[0]?256:block[1]+1;if(end<2)throw new Error('Invalid font sector length.');payload.push(...block.subarray(2,end));if(payload.length>65536)throw new Error('Font record exceeds the viewer limit.');[track,number]=block;
+                            }
+                            if(fonts.length>=32)throw new Error('Font import limit reached.');
+                            fonts.push(decodeGeosFont(new Uint8Array(payload),id,size,file.name));
+                        }catch(error){notes.push(file.name+' '+size+': '+error.message);}
+                    }
+                }catch(error){notes.push(file.name+': '+error.message);}
+            }
+            return {fonts,warnings:notes};
+        }
         return {files:result,diskName:diskText(bam.subarray(144,160))||'UNTITLED',freeBlocks,usedBlocks:664-freeBlocks,
-            isGeos,warnings,bytes,readGeoWrite,filename:'disk.d64'};
+            isGeos,warnings,bytes,readGeoWrite,readFonts,filename:'disk.d64'};
+    }
+    async function loadFontImage(input,request=++fontRequest){
+        if(request!==fontRequest||state.phase!=='desktop')return;
+        if(typeof FontFace!=='function'||!document.fonts){if(state.phase==='desktop')dialog('Fonts unavailable',['This browser cannot load fonts.','The reader will use its fallback.']);return;}
+        let data;try{data=parseD64(input).readFonts();}catch(error){if(request===fontRequest&&state.phase==='desktop')dialog('Fonts not loaded',[error.message]);return;}
+        let retained=0;const pending=[];
+        for(const font of data.fonts){
+            const key=font.fontId+'/'+font.pointSize;
+            if(loadedFonts.has(key)){retained++;continue;}
+            if(loadedFonts.size+pending.length>=64){data.warnings.push('Session font limit reached.');break;}
+            const family='GEOSBitmap'+(++fontSerial);
+            pending.push((async()=>{try{const face=new FontFace(family,geosTrueType(font).buffer);await face.load();return {key,family,face,font};}catch(error){data.warnings.push(font.name+' '+font.pointSize+': browser font loading failed.');return null;}})());
+        }
+        const ready=await Promise.all(pending);if(request!==fontRequest||state.phase!=='desktop')return;
+        let added=0;for(const item of ready){if(!item||loadedFonts.has(item.key))continue;document.fonts.add(item.face);loadedFonts.set(item.key,item);added++;}
+        const message=added+' font sizes loaded, '+retained+' kept.';
+        if(nativeDocument&&state.modal?.kind==='geowrite'){const top=editor?.scrollTop||0;showNativeDocument(nativeDocument.index);editor.scrollTop=top;}
+        else if(!state.launch&&!nativeDocument&&!state.modal)dialog('Fonts loaded',[message,loadedFonts.size+' sizes available this session.','Use disk > open D64 for a document.'],[['Details',()=>dialog('Font details',[],[['Close',closeModal]],'reader',message+'\nFonts stay in memory until this page is refreshed. Existing ID/size matches are kept.\n\n'+(data.warnings.join('\n')||'No font import warnings.'))],['Close',closeModal]]);
+        say(message+(data.warnings.length?' '+data.warnings.length+' import warnings.':''));
     }
     function previewD64(input,filename='disk.d64') {
         if(state.launch||nativeDocument)return;
@@ -316,7 +408,7 @@
         geos:[['GEOS info','geos-info'],['deskTop info','desktop-info'],null,['select printer','printer'],['select input','input'],null,['preference mgr','preferences'],['pad color mgr','colors'],['alarm clock','clock'],['note pad','note'],['calculator','calculator']],
         file:[['new text','new-text'],['new picture','new-picture'],['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
         view:[['by icon','view-icon'],['by size','view-size'],['by type','view-type'],['by date','view-date'],['by name','view-name']],
-        disk:[['open','disk-open'],['close','disk-close'],['open D64','d64-open'],['web disk','web-disk'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],['empty basket','trash-empty'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
+        disk:[['open','disk-open'],['close','disk-close'],['open D64','d64-open'],['load fonts','fonts-load'],['web disk','web-disk'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],['empty basket','trash-empty'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
         select:[['all','select-all'],['none','select-none']],
         page:[['next','page-next'],['previous','page-previous'],['first','page-first'],['last','page-last']],
         options:[['shortcuts','shortcuts'],['BASIC','quit']]
@@ -473,6 +565,7 @@
                         }
                         const span=element('span');span.textContent=paragraph.ended&&run===paragraph.runs[paragraph.runs.length-1]?run.text.replace(/\n$/,''):run.text;
                         Object.assign(span.style,{fontSize:run.pointSize+'px',fontWeight:run.style&64?'bold':'normal',fontStyle:run.style&16?'italic':'normal',textDecoration:run.style&128?'underline':'none'});
+                        const original=loadedFonts.get(run.fontId+'/'+run.pointSize);if(original)span.style.fontFamily=original.family+', Arial, sans-serif';
                         block.appendChild(span);
                         }
                         editor.appendChild(block);
@@ -484,11 +577,13 @@
             if(m.kind==='note')smallText(state.storageIssue?'session only - export disk':'saved to disk',x+8,y+134);
             if(m.kind==='document')smallText(state.documentEdit.message||(documentDirty()?'unsaved changes':state.documentEdit.fileId===null?'not saved yet':'saved to disk'),x+8,y+134);
             if(m.kind==='geowrite'){
-                const d=nativeDocument;smallText(d.data.items[d.index].label+' - formatted'+(d.data.warnings.length?' - see Details':''),x+8,y+134);
+                const d=nativeDocument,currentRuns=d.data.items[d.index].runs.filter(r=>!r.picture),matches=currentRuns.filter(r=>loadedFonts.has(r.fontId+'/'+r.pointSize)).length;
+                const fontStatus=matches?(matches===currentRuns.length?'GEOS fonts':'mixed fonts'):'browser fonts';
+                smallText(d.data.items[d.index].label+' - '+fontStatus+(d.data.warnings.length?' - see Details':''),x+8,y+134);
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Paragraph positions scale to the viewer width; line wrapping uses a generic browser font. Original page layout, custom tab stops, line spacing, reverse, outline, superscript and subscript are omitted. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Unreadable pictures use placeholders and warnings below. Export is plain text with picture-omitted markers.\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Original page layout, custom tab stops, line spacing, reverse, outline, superscript and subscript are omitted. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);
@@ -782,6 +877,7 @@
             case 'disk-close':state.diskOpen=false;state.selected.clear();break;
             case 'disk-rename':rename('Rename disk',state.diskName,name=>{state.diskName=name;});return;
             case 'd64-open':d64Picker.click();return;
+            case 'fonts-load':fontPicker.click();render();return;
             case 'web-disk':returnWebDisk();break;
             case 'disk-info':if(mountedD64){dialog('D64 disk info',[state.diskName,mountedD64.isGeos?'GEOS format - read only':'CBM DOS - read only',mountedD64.freeBlocks+' blocks free',mountedD64.warnings.length+' metadata warnings'],[['Details',()=>dialog('D64 details',[],[['Close',closeModal]],'reader',mountedD64.warnings.join('\n')||'No directory metadata warnings. File contents have not been validated.')],['Close',closeModal]]);return;}dialog('Disk info',[state.diskName,'Drive A: 1541   Device 8','165 Kbytes total',state.storageIssue||'Saved in this browser.']);return;
             case 'disk-export':exportDisk();break;
@@ -820,11 +916,16 @@
         d64Picker.addEventListener('change',async()=>{const file=d64Picker.files?.[0],request=++d64Request;d64Picker.value='';if(!file)return;
             if(![174848,175531].includes(file.size)){dialog('D64 not opened',['Use a 35-track D64 image.','The current disk is unchanged.']);return;}
             try{const bytes=await file.arrayBuffer();if(state.phase==='desktop'&&request===d64Request&&!state.launch&&!nativeDocument)previewD64(bytes,file.name);}catch(error){if(state.phase==='desktop'&&request===d64Request&&!state.launch&&!nativeDocument)dialog('D64 not opened',['This image could not be read.','The current disk is unchanged.']);}});
+        fontPicker=element('input');fontPicker.type='file';fontPicker.accept='.d64';fontPicker.hidden=true;root.appendChild(fontPicker);
+        fontPicker.addEventListener('change',async()=>{const file=fontPicker.files?.[0],request=++fontRequest;fontPicker.value='';if(!file)return;
+            if(![174848,175531].includes(file.size)){dialog('Fonts not loaded',['Use a 35-track D64 image.']);return;}
+            try{const bytes=await file.arrayBuffer();await loadFontImage(bytes,request);}catch(error){if(request===fontRequest&&state.phase==='desktop'&&!state.launch&&!nativeDocument)dialog('Fonts not loaded',['This image could not be read.']);}});
         desktop.append(canvas,controls,status);viewport.append(desktop);monitor.append(viewport);root.append(monitor);document.body.append(root);
         desktop.addEventListener('click',e=>{if(e.target===canvas||e.target===controls){state.menu=null;deselect();}});
         window.addEventListener('resize',fit);
     }
     function leave() {
+        fontRequest++;
         nativeDocument=null;
         returnWebDisk(false);d64Request++;
         painting=null;if(paintSurface){paintSurface.remove();paintSurface=null;}
