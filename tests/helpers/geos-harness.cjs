@@ -55,6 +55,7 @@ function desktop(options = {}) {
         }
         now = end;
     }
+    const windowListeners = new Map();
     const sandbox = {
         document, innerWidth: 1024, innerHeight: 768,
         localStorage: { getItem: key => { if (options.failRead?.(key)) throw new Error('Storage denied'); return storage.get(key) ?? null; },
@@ -63,7 +64,7 @@ function desktop(options = {}) {
         matchMedia: () => ({ matches: options.reducedMotion ?? true }),
         setTimeout: (fn, delay = 0) => { const id = nextTimer++; timers.set(id, { fn, at: now + delay }); return id; },
         clearTimeout: id => timers.delete(id), setInterval() {}, clearInterval() {},
-        addEventListener() {}
+        addEventListener: (name, fn) => windowListeners.set(name, fn)
     };
     sandbox.window = sandbox;
     const source = fs.readFileSync(require.resolve('../../script.js'), 'utf8');
@@ -75,7 +76,8 @@ function desktop(options = {}) {
     if (!options.manualBoot) advance(4000);
     const api = sandbox.geosTest;
     return { api, storage, document, downloads, output, advance, file: name => api.files.find(file => file.name === name),
-        key: (key, target = document.activeElement) => documentListeners.get('keydown')({ key, target, preventDefault() {}, stopImmediatePropagation() {} }) };
+        key: (key, target = document.activeElement, modifiers = {}) => documentListeners.get('keydown')({ key, target, preventDefault() {}, stopImmediatePropagation() {}, ...modifiers }),
+        unload: () => { const event = { prevented: false, preventDefault() { this.prevented = true; } }; windowListeners.get('beforeunload')?.(event); return event; } };
 }
 
 module.exports = { desktop };

@@ -24,7 +24,7 @@
         diskId,structure:[6,7,14].includes(geosType)?'VLIR':'sequential',locked:[4,12].includes(geosType)}));
     Object.assign(files[11],{parentApplication:'TEXT READER',parentDiskId:diskId,
         content:['You found the hidden disk!','Double-click files to open.','Turn the corner for page 2.','options > BASIC to return.']});
-    const state = { phase:'off', page:0, view:'icon', diskOpen:true, diskId, diskName:'GEOS 2.0', selected:new Set(), menu:null, hover:-1, modal:null, launch:null, trash:null, note:'', pattern:0, storageIssue:'' };
+    const state = { phase:'off', page:0, view:'icon', diskOpen:true, diskId, diskName:'GEOS 2.0', selected:new Set(), menu:null, hover:-1, modal:null, launch:null, documentEdit:null, trash:null, note:'', pattern:0, storageIssue:'' };
     let root, desktop, canvas, ctx, controls, status, editor, callbacks, clockTimer, diskPicker;
     let timers = [], focusKey = null, lastFileClick = null, calc = { display:'0', left:null, op:null, fresh:true };
     const DISK_KEY='c64-geos-disk', BACKUP_KEY='c64-geos-disk-backup', RECOVERY_KEY='c64-geos-disk-recovery';
@@ -102,10 +102,13 @@
             persistDisk();
         } catch(e){writesBlocked=true;storageFailed('Browser storage is unavailable.');}
     }
+    function downloadFile(content,name,type) {
+        const url=URL.createObjectURL(new Blob([content],{type}));
+        const link=element('a');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }
     function exportDisk() {
-        const url=URL.createObjectURL(new Blob([JSON.stringify(diskSnapshot(),null,2)],{type:'application/json'}));
-        const link=element('a');link.href=url;link.download='geos-disk.json';document.body.appendChild(link);link.click();link.remove();
-        setTimeout(()=>URL.revokeObjectURL(url),1000);say('Disk backup downloaded.');
+        downloadFile(JSON.stringify(diskSnapshot(),null,2),'geos-disk.json','application/json');say('Disk backup downloaded.');
     }
     function previewImport(raw) {
         let data;try{data=decodeDisk(raw);}catch(e){dialog('Import failed',['This backup could not be read.','The current disk is unchanged.']);return;}
@@ -123,7 +126,7 @@
     }
     const menus = {
         geos:[['GEOS info','geos-info'],['deskTop info','desktop-info'],null,['select printer','printer'],['select input','input'],null,['preference mgr','preferences'],['pad color mgr','colors'],['alarm clock','clock'],['note pad','note'],['calculator','calculator']],
-        file:[['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
+        file:[['new text','new-text'],['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
         view:[['by icon','view-icon'],['by size','view-size'],['by type','view-type'],['by date','view-date'],['by name','view-name']],
         disk:[['open','disk-open'],['close','disk-close'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
         select:[['all','select-all'],['none','select-none']],
@@ -232,6 +235,11 @@
     }
     function dialog(title,lines,buttons=[['OK',closeModal]],kind='message',value='') {lastFileClick=null;if(editor){editor.remove();editor=null;}state.menu=null;state.modal={title,lines,buttons,kind,value};say(title+'. '+lines.join(' '));render();focusFirst();}
     function closeModal() {
+        if(state.documentEdit){if(state.modal?.kind==='document')confirmDocumentAction(()=>finishCloseModal());else showDocumentEditor();return;}
+        finishCloseModal();
+    }
+    function finishCloseModal() {
+        state.documentEdit=null;
         state.modal=null;if(editor){editor.remove();editor=null;}
         const saved=state.launch?.desktop;state.launch=null;
         if(saved){state.page=saved.page;state.view=saved.view;state.diskId=saved.diskId;state.diskOpen=saved.diskOpen;state.selected=new Set(saved.selected);}
@@ -241,7 +249,7 @@
     }
     function focusFirst() {const target=editor||controls.querySelector('[data-modal="true"]');if(target)target.focus();}
     function drawModal() {
-        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(m.kind==='note'||m.kind==='reader'){x=40;y=24;w=240;h=161;}
+        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(['note','reader','document'].includes(m.kind)){x=40;y=24;w=240;h=161;}
         // The active dialog blocks every desktop control, including keyboard focus.
         controls.replaceChildren();fill(x+3,y+3,w,h,INK);fill(x,y,w,h);box(x,y,w,h);box(x+2,y+2,w-4,h-4);fill(x+3,y+3,w-6,12,INK);center(m.title,x+4,y+5,w-8,PAPER);
         const modalControl=(key,name,bx,by,bw,fn)=>{button(key,name,bx,by,bw,fn);controls.lastElementChild.dataset.modal='true';};
@@ -249,12 +257,23 @@
             fill(x+10,y+23,w-20,16);box(x+10,y+23,w-20,16);const display=calc.display.slice(0,18);text(display,x+w-15-width(display),y+28);
             const keys=['7','8','9','/','4','5','6','*','1','2','3','-','C','0','=','+'];keys.forEach((key,i)=>modalControl('calc-'+key,key,x+10+(i%4)*35,y+47+Math.floor(i/4)*23,29,()=>calculate(key)));
             modalControl('modal-close','Close',x+48,y+h-20,60,closeModal);
-        } else if(m.kind==='note'||m.kind==='reader') {
-            if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label',m.kind==='reader'?'Document text':'Note pad text');editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:state.note;
+        } else if(['note','reader','document'].includes(m.kind)) {
+            if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label',m.kind==='reader'?'Document text':m.kind==='document'?'Edit document text':'Note pad text');editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:m.kind==='document'?state.documentEdit.text:state.note;
+                if(m.kind==='document'){editor.maxLength=200000;editor.addEventListener('input',()=>{state.documentEdit.text=editor.value;state.documentEdit.message='';state.modal.title=documentTitle();render();});}
                 if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;const file=files.find(file=>file.id===state.launch?.fileId);if(file)file.content=state.note;persistDisk();render();});}desktop.appendChild(editor);}
             Object.assign(editor.style,{left:(x+8)+'px',top:(y+22)+'px',width:(w-16)+'px',height:'108px'});
             if(m.kind==='note')smallText(state.storageIssue?'session only - export disk':'saved to disk',x+8,y+134);
-            modalControl('modal-close','Close',x+w-67,y+h-21,58,closeModal);
+            if(m.kind==='document')smallText(state.documentEdit.message||(documentDirty()?'unsaved changes':state.documentEdit.fileId===null?'not saved yet':'saved to disk'),x+8,y+134);
+            if(m.kind==='document'){
+                modalControl('document-new','New',x+8,y+h-21,40,newDocument);
+                modalControl('document-save','Save',x+55,y+h-21,42,()=>saveDocument());
+                modalControl('document-export','Export',x+104,y+h-21,50,exportDocument);
+                modalControl('modal-close','Close',x+161,y+h-21,65,closeModal);
+            } else if(m.kind==='note'){
+                modalControl('document-new','New',x+8,y+h-21,60,newDocument);
+                modalControl('document-save-as','Save as',x+84,y+h-21,68,()=>{beginDocument(null,state.note);promptDocumentName(()=>showDocumentEditor(),true);});
+                modalControl('modal-close','Close',x+168,y+h-21,60,closeModal);
+            } else modalControl('modal-close','Close',x+w-67,y+h-21,58,closeModal);
         } else {
             m.lines.forEach((value,i)=>center(value,x+7,y+24+i*12,w-14));
             if(m.kind==='rename'&&!editor){editor=element('input','geos-editor');editor.type='text';editor.maxLength=16;editor.value=m.value;editor.setAttribute('aria-label',m.title);Object.assign(editor.style,{left:(x+16)+'px',top:(y+50)+'px',width:(w-32)+'px',height:'17px'});desktop.appendChild(editor);editor.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();m.buttons[0][1]();}});}
@@ -275,6 +294,64 @@
     function rename(title,value,save) {
         dialog(title,['Enter a new name:'],[['OK',()=>{const name=editor.value.trim();if(!name){say('Enter a name.');return;}save(name);persistDisk();closeModal();}],['Cancel',closeModal]],'rename');state.modal.value=value;editor.value=value;editor.select();
     }
+    function documentText(file) {return Array.isArray(file.content)?file.content.join('\n'):String(file.content??'');}
+    function documentDirty() {const draft=state.documentEdit;return !!draft&&(draft.fileId===null?draft.text.length>0:draft.text!==draft.savedText);}
+    function documentTitle() {const draft=state.documentEdit;return (draft.name||'Untitled')+(documentDirty()?' *':'');}
+    function showDocumentEditor() {dialog(documentTitle(),[],[['Close',closeModal]],'document');}
+    function showScratchNote() {state.documentEdit=null;state.note=files.find(file=>file.id===state.launch?.fileId)?.content??'';dialog('Note Pad',[],[['Close',closeModal]],'note');}
+    function beginDocument(file=null,text='') {
+        if(file?.locked){dialog(file.name,[],[['Close',closeModal]],'reader',documentText(file));return;}
+        state.documentEdit={fileId:file?.id??null,name:file?.name||'',text:file?documentText(file):text,savedText:file?documentText(file):'',message:''};
+        showDocumentEditor();
+    }
+    function confirmDocumentAction(next) {
+        if(!documentDirty()){next();return;}
+        dialog('Unsaved changes',[state.documentEdit.name||'Untitled','Save your changes first?'],[['Save',()=>saveDocument(next)],['Discard',next],['Cancel',showDocumentEditor]]);
+    }
+    function newDocument() {
+        if(!state.launch){launchById('note');if(!state.launch)return;}
+        confirmDocumentAction(()=>beginDocument());
+    }
+    function promptDocumentName(onSaved,fromScratch=false) {
+        dialog('Save document',['Enter a file name:'],[['Save',()=>{
+            const name=editor.value.trim();
+            if(!name||files.some(file=>file.name.toUpperCase()===name.toUpperCase())){
+                state.modal.lines=['Enter a file name:',name?'That name is already used.':'A name is required.'];render();return;
+            }
+            saveDocument(onSaved,name);
+        }],['Cancel',fromScratch?showScratchNote:showDocumentEditor]],'rename',state.documentEdit.name);
+        if(fromScratch)state.modal.cancel=showScratchNote;
+    }
+    function saveDocument(onSaved=showDocumentEditor,name=null) {
+        const draft=state.documentEdit;if(!draft)return;
+        if(draft.fileId===null&&name===null){promptDocumentName(onSaved);return;}
+        if(draft.fileId===null&&name!==null)draft.name=name;
+        const index=files.findIndex(file=>file.id===draft.fileId),original=files[index];
+        if(draft.fileId!==null&&(!original||original.locked||original.id===state.trash?.id)){
+            draft.message='Document is not writable.';showDocumentEditor();return;
+        }
+        const app=files.find(file=>file.id===state.launch?.fileId);
+        if(!app){draft.message='Note Pad is unavailable.';showDocumentEditor();return;}
+        let id=0;while(files.some(file=>file.id===id))id++;
+        const updated={...(original||{id,name,geosType:GEOS_TYPE.DOCUMENT,type:'document',icon:'note',diskId:state.diskId,structure:'sequential',locked:false,
+            parentApplication:app.name,parentDiskId:app.diskId}),content:draft.text,size:Math.max(1,Math.ceil(new Blob([draft.text]).size/1024))};
+        const candidate=diskSnapshot();if(index<0)candidate.files.push(updated);else candidate.files[index]=updated;
+        try{decodeDisk(JSON.stringify(candidate));}catch(e){draft.message='Disk full. Export your text.';showDocumentEditor();return;}
+        if(index<0)files.push(updated);else files[index]=updated;
+        if(!persistDisk()){
+            if(index<0)files.pop();else files[index]=original;
+            draft.message='Not saved. Export your text.';showDocumentEditor();return;
+        }
+        draft.fileId=updated.id;draft.name=updated.name;draft.savedText=draft.text;draft.message='Saved to disk.';
+        const position=available().findIndex(file=>file.id===updated.id);
+        Object.assign(state.launch.desktop,{page:Math.floor(position/8),diskOpen:true,selected:[updated.id],focusKey:'file-'+updated.id});
+        onSaved();
+    }
+    function exportDocument() {
+        const draft=state.documentEdit;if(!draft)return;
+        let name=(draft.name||'untitled').replace(/[\\/:*?"<>|]/g,'_');if(!name.toLowerCase().endsWith('.txt'))name+='.txt';
+        downloadFile(draft.text,name,'text/plain;charset=utf-8');say('Document text downloaded.');
+    }
     const applications = new Map([
         ['desktop',{geosType:6,open:()=>closeModal()}],
         ['configure',{geosType:6,open:()=>dialog('CONFIGURE 2.0',['Drive A: 1541   Device 8','Input: mouse / keyboard','64K RAM'])}],
@@ -282,7 +359,7 @@
         ['colors',{geosType:5,open:()=>dialog('Pad Color Manager',['Choose a desktop pattern.'],[['Change',()=>{state.pattern=state.pattern?0:1;persistDisk();render();}],['Close',closeModal]])}],
         ['clock',{geosType:5,open:()=>{const now=new Date();dialog('Alarm Clock',[now.toLocaleDateString('en-US'),now.toLocaleTimeString('en-US'),'System clock']);}}],
         ['calculator',{geosType:5,open:()=>{calc={display:'0',left:null,op:null,fresh:true};dialog('Calculator',[],[['Close',closeModal]],'calculator');}}],
-        ['note',{geosType:5,open:()=>{state.note=files.find(file=>file.id===state.launch?.fileId)?.content??'';dialog('Note Pad',[],[['Close',closeModal]],'note');}}],
+        ['note',{geosType:5,open:document=>document?beginDocument(document):showScratchNote()}],
         ['text-reader',{geosType:6,open:document=>document?dialog(document.name,[],[['Close',closeModal]],'reader',Array.isArray(document.content)?document.content.join('\n'):String(document.content??'')):
             dialog('Text Reader',['Open a document from','the disk to read it.'],[['Close',closeModal]])}]
     ]);
@@ -311,7 +388,7 @@
             case GEOS_TYPE.AUTO_EXEC:launchApplication(file);return;
             case GEOS_TYPE.DOCUMENT:{
                 if(!file.parentApplication){cannotOpen();return;}
-                const app=available().find(f=>[GEOS_TYPE.APPLICATION,GEOS_TYPE.AUTO_EXEC].includes(f.geosType)&&
+                const app=available().find(f=>([GEOS_TYPE.APPLICATION,GEOS_TYPE.AUTO_EXEC].includes(f.geosType)||(f.geosType===GEOS_TYPE.ACCESSORY&&f.applicationId==='note'))&&
                     f.diskId===(file.parentDiskId||file.diskId)&&f.name.toUpperCase()===file.parentApplication.toUpperCase());
                 if(!app){dialog('Application not found',[file.parentApplication,'is not on the current disk.','Restore the application','and choose Retry.'],[['Retry',()=>openFile(file)],['Cancel',closeModal]]);return;}
                 launchApplication(app,file);return;
@@ -327,9 +404,10 @@
             case 'geos-info':dialog('GEOS info',['GEOS 64   Version 2.0','Graphic Environment','Operating System','Berkeley Softworks 1988']);return;
             case 'desktop-info':dialog('deskTop info',['deskTop   Version 2.0','A browser recreation for','GENX JAY','jasonstum.com']);return;
             case 'open':if(file){openFile(file);return;}dialog('Open',['Select a file first.']);return;
+            case 'new-text':newDocument();return;
             case 'info':if(!file){dialog('File info',['Select a file first.']);return;}dialog('File info',[file.name,file.type,file.size+' Kbytes',file.locked?'write protected':'not write protected',file.parentApplication?'opens with '+file.parentApplication:file.structure]);return;
             case 'rename':if(!file){dialog('Rename',['Select a file first.']);return;}if(file.locked){dialog('Rename',['This system file is protected.']);return;}rename('Rename file',file.name,name=>{file.name=name;});return;
-            case 'duplicate':if(!file){dialog('Duplicate',['Select a file first.']);return;}if(files.reduce((n,f)=>n+f.size,0)+file.size>165){dialog('Duplicate',['Disk full.']);return;}{let id=0;while(files.some(file=>file.id===id))id++;const copy={...file,id,name:('copy '+file.name).slice(0,16),locked:[4,12].includes(file.geosType)};const candidate=diskSnapshot();candidate.files.push(copy);try{decodeDisk(JSON.stringify(candidate));}catch(e){dialog('Duplicate',['Disk full.']);return;}files.push(copy);persistDisk();}break;
+            case 'duplicate':if(!file){dialog('Duplicate',['Select a file first.']);return;}if(files.reduce((n,f)=>n+f.size,0)+file.size>165){dialog('Duplicate',['Disk full.']);return;}{let id=0;while(files.some(file=>file.id===id))id++;let name,count=1;do{const prefix=count===1?'copy ':'copy '+count+' ';name=prefix+file.name.slice(0,16-prefix.length);count++;}while(files.some(file=>file.name.toUpperCase()===name.toUpperCase()));const copy={...file,id,name,locked:[4,12].includes(file.geosType)};const candidate=diskSnapshot();candidate.files.push(copy);try{decodeDisk(JSON.stringify(candidate));}catch(e){dialog('Duplicate',['Disk full.']);return;}files.push(copy);persistDisk();}break;
             case 'delete':if(!file){dialog('Delete',['Select a file first.']);return;}if(file.locked){dialog('Delete',['This system file is protected.']);return;}dialog('Delete file',[file.name,'Move to the waste basket?'],[['Delete',()=>{state.trash=file;state.selected.clear();state.page=Math.min(state.page,pages()-1);persistDisk();closeModal();}],['Cancel',closeModal]]);return;
             case 'disk-open':state.diskOpen=true;break;
             case 'disk-close':state.diskOpen=false;state.selected.clear();break;
@@ -349,7 +427,7 @@
             case 'input':dialog('Select input',['Mouse / touch / keyboard','Input driver selected.']);return;
             case 'preferences':case 'colors':case 'clock':case 'calculator':case 'note':launchById(action);return;
             case 'shortcuts':dialog('Shortcuts',['Tab / arrows: select controls','Enter / Space: activate','Page Up / Down: turn page','Esc: close   Alt+B: BASIC']);return;
-            case 'quit':dialog('Return to BASIC',['Leave GEOS and return to BASIC?'],[['OK',leave],['Cancel',closeModal]]);return;
+            case 'quit':if(state.documentEdit){confirmDocumentAction(()=>{state.documentEdit=null;leave();});return;}dialog('Return to BASIC',['Leave GEOS and return to BASIC?'],[['OK',leave],['Cancel',closeModal]]);return;
         }
         render();
     }
@@ -371,7 +449,7 @@
         window.addEventListener('resize',fit);
     }
     function leave() {
-        timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);importRequest++;state.phase='off';state.menu=null;state.modal=null;state.launch=null;lastFileClick=null;
+        timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);importRequest++;state.phase='off';state.menu=null;state.modal=null;state.launch=null;state.documentEdit=null;lastFileClick=null;
         if(root)root.hidden=true;if(editor){editor.remove();editor=null;}
         document.body.classList.remove('geos-active');callbacks.onExit();
     }
@@ -390,9 +468,10 @@
         // Browser shortcuts remain available. Stop BASIC from receiving GEOS keys.
         event.stopImmediatePropagation();
         if(state.phase==='loading'){if(event.key==='Escape'){event.preventDefault();leave();}return;}
-        if(event.key==='Escape'){event.preventDefault();if(state.modal)closeModal();else if(state.menu){state.menu=null;render();}else act('quit');return;}
+        if(event.key==='Escape'){event.preventDefault();if(state.modal?.cancel)state.modal.cancel();else if(state.modal)closeModal();else if(state.menu){state.menu=null;render();}else act('quit');return;}
         if(event.altKey&&event.key.toLowerCase()==='b'){event.preventDefault();act('quit');return;}
-        if(event.target===editor){if(event.key==='Enter'&&state.modal?.kind==='rename'){event.preventDefault();state.modal.buttons[0][1]();}return;}
+        if(state.modal?.kind==='document'&&(event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();saveDocument();return;}
+        if(event.target===editor&&event.key!=='Tab'){if(event.key==='Enter'&&state.modal?.kind==='rename'){event.preventDefault();state.modal.buttons[0][1]();}return;}
         if(!state.modal&&event.key==='Enter'&&event.target.dataset?.key?.startsWith('file-')){event.preventDefault();const file=files.find(f=>f.id===Number(event.target.dataset.key.slice(5)));if(file)openFile(file);return;}
         if(event.key==='F1'){event.preventDefault();act('shortcuts');return;}
         if(state.modal&&state.modal.kind==='calculator'&&/^[0-9+*/=\-]$/.test(event.key)){event.preventDefault();calculate(event.key);return;}
@@ -404,6 +483,7 @@
     },true);
     // Pasting into the note pad must never execute commands in the hidden BASIC prompt.
     document.addEventListener('paste',event=>{if(state.phase!=='off')event.stopImmediatePropagation();},true);
+    window.addEventListener('beforeunload',event=>{if(documentDirty()){event.preventDefault();event.returnValue='';}});
     window.GEOS={boot,get active(){return state.phase!=='off';}};
 })();
 

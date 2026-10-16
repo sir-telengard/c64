@@ -107,6 +107,12 @@ TEXT READER application. Case-insensitive filename matching and restoration of
 the desktop context are browser design choices. Item 5 remains unverified against
 the original runtime; the tests use a DOM/canvas substitute.
 
+The subsequent named-text editor adds a browser extension: documents may also
+associate with the browser Note Pad accessory (`geosType=5`, `applicationId=note`).
+Other accessories remain excluded as document parents. This makes new plain-text
+documents editable without replacing or rewriting existing saved disks; it is not
+the original desktop's application-only document dispatch.
+
 ## Remaining limits
 
 Ghidra pseudocode contains warnings at external kernel calls, inline-data APIs,
