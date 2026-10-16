@@ -13,7 +13,7 @@
     const glyphs = Object.fromEntries(Object.entries(alphabet).map(([key, rows]) => [key, rows.split('/')]));
     const GEOS_TYPE = Object.freeze({SYSTEM:4, ACCESSORY:5, APPLICATION:6, DOCUMENT:7, PRINTER:9, INPUT:10, BOOT:12, AUTO_EXEC:14});
     const diskId = 'geos-demo';
-    const fileTypes = {4:'system',5:'accessory',6:'application',7:'document',9:'printer driver',10:'input driver',12:'system boot',14:'application'};
+    const fileTypes = {0:'non-GEOS',1:'BASIC program',2:'assembly',3:'data',4:'system',5:'accessory',6:'application',7:'document',8:'font',9:'printer driver',10:'input driver',11:'disk driver',12:'system boot',13:'temporary',14:'application',15:'input driver'};
     // Application IDs describe behavior; icons and display names can change independently.
     const files = [
         ['GEOS',4,12,'system'],['GEOBOOT',12,4,'system'],['DESK TOP',6,22,'desktop','desktop'],['CONFIGURE',6,8,'configure','configure'],
@@ -24,14 +24,108 @@
         diskId,structure:[6,7,14].includes(geosType)?'VLIR':'sequential',locked:[4,12].includes(geosType)}));
     Object.assign(files[11],{parentApplication:'TEXT READER',parentDiskId:diskId,
         content:['You found the hidden disk!','Double-click files to open.','Turn the corner for page 2.','options > BASIC to return.']});
-    const state = { phase:'off', page:0, view:'icon', diskOpen:true, diskId, diskName:'GEOS 2.0', selected:new Set(), menu:null, hover:-1, modal:null, launch:null, trash:null, note:'', pattern:0 };
-    let root, desktop, canvas, ctx, controls, status, editor, callbacks, clockTimer;
+    const state = { phase:'off', page:0, view:'icon', diskOpen:true, diskId, diskName:'GEOS 2.0', selected:new Set(), menu:null, hover:-1, modal:null, launch:null, trash:null, note:'', pattern:0, storageIssue:'' };
+    let root, desktop, canvas, ctx, controls, status, editor, callbacks, clockTimer, diskPicker;
     let timers = [], focusKey = null, lastFileClick = null, calc = { display:'0', left:null, op:null, fresh:true };
+    const DISK_KEY='c64-geos-disk', BACKUP_KEY='c64-geos-disk-backup', RECOVERY_KEY='c64-geos-disk-recovery';
+    let diskLoaded=false, writesBlocked=false, lastSavedRaw=null, importRequest=0;
+    function diskSnapshot() {
+        return {format:'geos-web-disk',version:2,disk:{id:state.diskId,name:state.diskName,pattern:state.pattern},
+            files:JSON.parse(JSON.stringify(files)),trashId:state.trash?.id??null};
+    }
+    function decodeDisk(raw) {
+        if(typeof raw!=='string'||raw.length>1000000)throw new Error('Disk backup is too large.');
+        const data=JSON.parse(raw);
+        if(data?.format!=='geos-web-disk')throw new Error('Not a GEOS web disk backup.');
+        if(data.version!==1&&data.version!==2)throw new Error('Disk version is not supported.');
+        const validText=(v,max)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
+        const pattern=data.version===1?(data.disk?.pattern??0):data.disk?.pattern;
+        if(!validText(data.disk?.id,64)||!validText(data.disk?.name,16)||![0,1].includes(pattern))throw new Error('Invalid disk information.');
+        if(!Array.isArray(data.files)||data.files.length>256)throw new Error('Invalid file directory.');
+        const ids=new Set();
+        const restored=data.files.map(file=>{
+            if(!file||!Number.isSafeInteger(file.id)||file.id<0||ids.has(file.id)||!validText(file.name,16)||
+                !Number.isInteger(file.geosType)||file.geosType<0||file.geosType>15||file.diskId!==data.disk.id||
+                !Number.isInteger(file.size)||file.size<1||file.size>165||!validText(file.icon,32)||
+                !['sequential','VLIR'].includes(file.structure)||typeof file.locked!=='boolean')throw new Error('Invalid file metadata.');
+            ids.add(file.id);
+            const result={id:file.id,name:file.name,geosType:file.geosType,type:fileTypes[file.geosType]||'file',size:file.size,
+                icon:file.icon,diskId:file.diskId,structure:file.structure,locked:file.locked||[4,12].includes(file.geosType)};
+            for(const [key,max] of [['applicationId',32],['parentApplication',16],['parentDiskId',64]]) {
+                if(file[key]!==undefined){if(!validText(file[key],max))throw new Error('Invalid application metadata.');result[key]=file[key];}
+            }
+            if(file.content!==undefined){
+                const content=Array.isArray(file.content)&&file.content.every(line=>typeof line==='string')?file.content.join('\n'):file.content;
+                if(typeof content!=='string'||content.length>200000)throw new Error('Invalid document text.');result.content=content;
+            }
+            return result;
+        });
+        if(restored.reduce((sum,file)=>sum+file.size,0)>165)throw new Error('Disk capacity exceeded.');
+        const trashId=data.version===1?(data.trashId??null):data.trashId;
+        if(trashId!==null&&!ids.has(trashId))throw new Error('Invalid waste basket entry.');
+        if(restored.some(file=>file.id===trashId&&file.locked))throw new Error('Protected file in waste basket.');
+        if(data.version===1&&data.note!==undefined){
+            if(typeof data.note!=='string'||data.note.length>2000)throw new Error('Invalid note text.');
+            const note=restored.find(file=>file.applicationId==='note');if(note&&note.content===undefined)note.content=data.note;
+        }
+        return {format:'geos-web-disk',version:2,disk:{id:data.disk.id,name:data.disk.name,pattern},files:restored,trashId};
+    }
+    function applyDisk(data) {
+        files.splice(0,files.length,...data.files);state.diskId=data.disk.id;state.diskName=data.disk.name;state.pattern=data.disk.pattern;
+        state.trash=files.find(file=>file.id===data.trashId)||null;state.note='';state.selected.clear();state.page=0;
+    }
+    function storageFailed(message) {state.storageIssue=message;if(status)say(message+' Changes remain in this session. Use disk > export.');}
+    function persistDisk() {
+        if(writesBlocked)return false;
+        try {
+            const previous=localStorage.getItem(DISK_KEY);
+            if(previous!==lastSavedRaw){writesBlocked=true;storageFailed('Another tab changed this disk.');return false;}
+            const next=JSON.stringify(diskSnapshot());decodeDisk(next);
+            if(previous!==null)localStorage.setItem(BACKUP_KEY,previous);
+            localStorage.setItem(DISK_KEY,next);lastSavedRaw=next;state.storageIssue='';return true;
+        } catch(e){storageFailed('Disk could not be saved.');return false;}
+    }
+    function loadDisk() {
+        if(diskLoaded)return;diskLoaded=true;
+        try {
+            lastSavedRaw=localStorage.getItem(DISK_KEY);
+            if(lastSavedRaw!==null){
+                try{const data=decodeDisk(lastSavedRaw);applyDisk(data);if(JSON.parse(lastSavedRaw).version===1)persistDisk();return;}
+                catch(e){
+                    writesBlocked=true;
+                    try{const backup=localStorage.getItem(BACKUP_KEY);if(backup!==null)applyDisk(decodeDisk(backup));}catch(backupError){/* Keep the supplied disk if neither save can be read. */}
+                    storageFailed('Saved disk needs recovery.');return;
+                }
+            }
+            const note=files.find(file=>file.applicationId==='note');
+            if(note)note.content=localStorage.getItem('c64-geos-note')||'';
+            persistDisk();
+        } catch(e){writesBlocked=true;storageFailed('Browser storage is unavailable.');}
+    }
+    function exportDisk() {
+        const url=URL.createObjectURL(new Blob([JSON.stringify(diskSnapshot(),null,2)],{type:'application/json'}));
+        const link=element('a');link.href=url;link.download='geos-disk.json';document.body.appendChild(link);link.click();link.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),1000);say('Disk backup downloaded.');
+    }
+    function previewImport(raw) {
+        let data;try{data=decodeDisk(raw);}catch(e){dialog('Import failed',['This backup could not be read.','The current disk is unchanged.']);return;}
+        dialog('Import disk',[data.disk.name,data.files.length+' files','Replace the current disk?','A previous copy will be kept.'],[['Import',()=>{
+            try {
+                const previous=localStorage.getItem(DISK_KEY);
+                if(previous!==lastSavedRaw){writesBlocked=true;storageFailed('Another tab changed this disk.');dialog('Import canceled',['Another tab changed this disk.','Reload before importing.']);return;}
+                if(previous!==null){try{decodeDisk(previous);}catch(e){localStorage.setItem(RECOVERY_KEY,previous);}}
+                localStorage.setItem(BACKUP_KEY,JSON.stringify(diskSnapshot()));
+                const next=JSON.stringify(data);localStorage.setItem(DISK_KEY,next);lastSavedRaw=next;
+            } catch(e){dialog('Import not saved',['The current disk is unchanged.','Export it and try again.']);return;}
+            writesBlocked=false;state.storageIssue='';state.launch=null;applyDisk(data);state.diskOpen=true;state.view='icon';
+            dialog('Disk imported',[state.diskName,'Your disk is ready.']);
+        }],['Cancel',closeModal]]);
+    }
     const menus = {
         geos:[['GEOS info','geos-info'],['deskTop info','desktop-info'],null,['select printer','printer'],['select input','input'],null,['preference mgr','preferences'],['pad color mgr','colors'],['alarm clock','clock'],['note pad','note'],['calculator','calculator']],
         file:[['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
         view:[['by icon','view-icon'],['by size','view-size'],['by type','view-type'],['by date','view-date'],['by name','view-name']],
-        disk:[['open','disk-open'],['close','disk-close'],['rename','disk-rename'],['info','disk-info'],['validate','validate']],
+        disk:[['open','disk-open'],['close','disk-close'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
         select:[['all','select-all'],['none','select-none']],
         page:[['next','page-next'],['previous','page-previous'],['first','page-first'],['last','page-last']],
         options:[['shortcuts','shortcuts'],['BASIC','quit']]
@@ -116,7 +210,7 @@
         fill(242,17,13,8);box(242,17,13,8);fill(245,20,7,2,INK);
         control('disk-close','Close disk',241,15,17,12,()=>act('disk-close'));
         fill(1,28,262,12);line(1,39,262,39);
-        if(state.diskOpen){const used=available().reduce((sum,f)=>sum+f.size,0);text(available().length+' files',5,30);text(used+' Kbytes used',68,30);text((165-used)+' Kbytes free',172,30);
+        if(state.diskOpen){const used=files.reduce((sum,f)=>sum+f.size,0);text(available().length+' files',5,30);text(used+' Kbytes used',68,30);text((165-used)+' Kbytes free',172,30);
             if(state.view==='icon')pageFiles().forEach((file,i)=>{const x=9+(i%4)*63,y=45+Math.floor(i/4)*43;icon(file.icon,x+19,y);label(file.name,x,y+24,61,state.selected.has(file.id));const el=control('file-'+file.id,file.name,x,y,61,35,e=>selectFile(file,e),{selected:state.selected.has(file.id)});el.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();openFile(file);}});});
             else pageFiles().forEach((file,i)=>{const y=42+i*10;if(state.selected.has(file.id))fill(3,y,257,10,INK);const c=state.selected.has(file.id)?PAPER:INK;text(file.name,7,y+1,c);text(file.type,106,y+1,c);text(file.size+'K',232,y+1,c);control('file-'+file.id,file.name,3,y,257,10,e=>selectFile(file,e),{selected:state.selected.has(file.id)});});
         }
@@ -126,9 +220,9 @@
         control('page-previous','Previous page',1,128,22,10,()=>act('page-previous'),{disabled:!state.diskOpen||state.page===0});
         icon('drive',281,26);text('A',286,31);label('GEOS',273,48,43,state.diskOpen);
         control('drive-a','Open GEOS disk in drive A',274,23,43,36,()=>act('disk-open'));
-        icon('trash',281,157);if(state.trash)fill(287,166,9,7,INK);control('trash','Waste basket',274,153,43,35,()=>state.trash?dialog('Waste basket',[state.trash.name,'Restore this file?'],[['Restore',()=>{state.trash=null;closeModal();}],['Cancel',closeModal]]):dialog('Waste basket',['The waste basket is empty.']));
+        icon('trash',281,157);if(state.trash)fill(287,166,9,7,INK);control('trash','Waste basket',274,153,43,35,()=>state.trash?dialog('Waste basket',[state.trash.name,'Restore this file?'],[['Restore',()=>{state.trash=null;persistDisk();closeModal();}],['Cancel',closeModal]]):dialog('Waste basket',['The waste basket is empty.']));
         text('GEOS',276,186);text('2.0',284,194);
-        text('deskTop',8,185);text('V2.0',8,194);
+        text('deskTop',8,185);text('V2.0',8,194);text(state.storageIssue?'session only':'disk saved',80,185);
     }
     function drawMenu(addControls=true) {
         const names=Object.keys(menus),index=names.indexOf(state.menu);let x=menuWidths.slice(0,index).reduce((a,b)=>a+b,0);const items=menus[state.menu],w=state.menu==='geos'?113:state.menu==='file'?94:96;x=Math.min(x,W-w-3);
@@ -157,8 +251,9 @@
             modalControl('modal-close','Close',x+48,y+h-20,60,closeModal);
         } else if(m.kind==='note'||m.kind==='reader') {
             if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label',m.kind==='reader'?'Document text':'Note pad text');editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:state.note;
-                if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;try{localStorage.setItem('c64-geos-note',state.note);}catch(e){say('Note is kept for this session. Browser storage is unavailable.');}});}desktop.appendChild(editor);}
+                if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;const file=files.find(file=>file.id===state.launch?.fileId);if(file)file.content=state.note;persistDisk();render();});}desktop.appendChild(editor);}
             Object.assign(editor.style,{left:(x+8)+'px',top:(y+22)+'px',width:(w-16)+'px',height:'108px'});
+            if(m.kind==='note')smallText(state.storageIssue?'session only - export disk':'saved to disk',x+8,y+134);
             modalControl('modal-close','Close',x+w-67,y+h-21,58,closeModal);
         } else {
             m.lines.forEach((value,i)=>center(value,x+7,y+24+i*12,w-14));
@@ -178,16 +273,16 @@
         if(focusKey){const target=[...controls.children].find(el=>el.dataset.key===focusKey);if(target)target.focus({preventScroll:true});}
     }
     function rename(title,value,save) {
-        dialog(title,['Enter a new name:'],[['OK',()=>{const name=editor.value.trim();if(!name){say('Enter a name.');return;}save(name);closeModal();}],['Cancel',closeModal]],'rename');state.modal.value=value;editor.value=value;editor.select();
+        dialog(title,['Enter a new name:'],[['OK',()=>{const name=editor.value.trim();if(!name){say('Enter a name.');return;}save(name);persistDisk();closeModal();}],['Cancel',closeModal]],'rename');state.modal.value=value;editor.value=value;editor.select();
     }
     const applications = new Map([
         ['desktop',{geosType:6,open:()=>closeModal()}],
         ['configure',{geosType:6,open:()=>dialog('CONFIGURE 2.0',['Drive A: 1541   Device 8','Input: mouse / keyboard','64K RAM'])}],
         ['preferences',{geosType:5,open:()=>dialog('Preference Manager',['Pointer: mouse / touch','Display: 320 x 200','Tab: select   Enter: open','Esc: close   F1: shortcuts'])}],
-        ['colors',{geosType:5,open:()=>dialog('Pad Color Manager',['Choose a desktop pattern.'],[['Change',()=>{state.pattern=state.pattern?0:1;render();}],['Close',closeModal]])}],
+        ['colors',{geosType:5,open:()=>dialog('Pad Color Manager',['Choose a desktop pattern.'],[['Change',()=>{state.pattern=state.pattern?0:1;persistDisk();render();}],['Close',closeModal]])}],
         ['clock',{geosType:5,open:()=>{const now=new Date();dialog('Alarm Clock',[now.toLocaleDateString('en-US'),now.toLocaleTimeString('en-US'),'System clock']);}}],
         ['calculator',{geosType:5,open:()=>{calc={display:'0',left:null,op:null,fresh:true};dialog('Calculator',[],[['Close',closeModal]],'calculator');}}],
-        ['note',{geosType:5,open:()=>{try{state.note=localStorage.getItem('c64-geos-note')||state.note;}catch(e){/* Session-only note when storage is blocked. */}dialog('Note Pad',[],[['Close',closeModal]],'note');}}],
+        ['note',{geosType:5,open:()=>{state.note=files.find(file=>file.id===state.launch?.fileId)?.content??'';dialog('Note Pad',[],[['Close',closeModal]],'note');}}],
         ['text-reader',{geosType:6,open:document=>document?dialog(document.name,[],[['Close',closeModal]],'reader',Array.isArray(document.content)?document.content.join('\n'):String(document.content??'')):
             dialog('Text Reader',['Open a document from','the disk to read it.'],[['Close',closeModal]])}]
     ]);
@@ -234,12 +329,15 @@
             case 'open':if(file){openFile(file);return;}dialog('Open',['Select a file first.']);return;
             case 'info':if(!file){dialog('File info',['Select a file first.']);return;}dialog('File info',[file.name,file.type,file.size+' Kbytes',file.locked?'write protected':'not write protected',file.parentApplication?'opens with '+file.parentApplication:file.structure]);return;
             case 'rename':if(!file){dialog('Rename',['Select a file first.']);return;}if(file.locked){dialog('Rename',['This system file is protected.']);return;}rename('Rename file',file.name,name=>{file.name=name;});return;
-            case 'duplicate':if(!file){dialog('Duplicate',['Select a file first.']);return;}if(available().reduce((n,f)=>n+f.size,0)+file.size>165){dialog('Duplicate',['Disk full.']);return;}files.push({...file,id:Math.max(...files.map(f=>f.id))+1,name:('copy '+file.name).slice(0,16),locked:false});break;
-            case 'delete':if(!file){dialog('Delete',['Select a file first.']);return;}if(file.locked){dialog('Delete',['This system file is protected.']);return;}dialog('Delete file',[file.name,'Move to the waste basket?'],[['Delete',()=>{state.trash=file;state.selected.clear();state.page=Math.min(state.page,pages()-1);closeModal();}],['Cancel',closeModal]]);return;
+            case 'duplicate':if(!file){dialog('Duplicate',['Select a file first.']);return;}if(files.reduce((n,f)=>n+f.size,0)+file.size>165){dialog('Duplicate',['Disk full.']);return;}{let id=0;while(files.some(file=>file.id===id))id++;const copy={...file,id,name:('copy '+file.name).slice(0,16),locked:[4,12].includes(file.geosType)};const candidate=diskSnapshot();candidate.files.push(copy);try{decodeDisk(JSON.stringify(candidate));}catch(e){dialog('Duplicate',['Disk full.']);return;}files.push(copy);persistDisk();}break;
+            case 'delete':if(!file){dialog('Delete',['Select a file first.']);return;}if(file.locked){dialog('Delete',['This system file is protected.']);return;}dialog('Delete file',[file.name,'Move to the waste basket?'],[['Delete',()=>{state.trash=file;state.selected.clear();state.page=Math.min(state.page,pages()-1);persistDisk();closeModal();}],['Cancel',closeModal]]);return;
             case 'disk-open':state.diskOpen=true;break;
             case 'disk-close':state.diskOpen=false;state.selected.clear();break;
             case 'disk-rename':rename('Rename disk',state.diskName,name=>{state.diskName=name;});return;
-            case 'disk-info':dialog('Disk info',[state.diskName,'Drive A: 1541','Device 8','165 Kbytes total']);return;
+            case 'disk-info':dialog('Disk info',[state.diskName,'Drive A: 1541   Device 8','165 Kbytes total',state.storageIssue||'Saved in this browser.']);return;
+            case 'disk-export':exportDisk();break;
+            case 'disk-import':diskPicker.click();break;
+            case 'disk-previous':try{const backup=localStorage.getItem(BACKUP_KEY);if(backup===null)dialog('Previous disk',['No previous copy is available.']);else previewImport(backup);}catch(e){dialog('Previous disk',['Browser storage is unavailable.']);}return;
             case 'validate':dialog('Validate',['Disk validated.','No errors found.']);return;
             case 'select-all':if(state.diskOpen)pageFiles().forEach(f=>state.selected.add(f.id));break;
             case 'select-none':state.selected.clear();break;
@@ -263,23 +361,28 @@
         canvas=element('canvas');canvas.width=W;canvas.height=H;canvas.setAttribute('aria-hidden','true');ctx=canvas.getContext('2d');
         controls=element('div','geos-controls');controls.setAttribute('aria-label','Desktop controls');
         status=element('div','geos-sr-only');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+        diskPicker=element('input');diskPicker.type='file';diskPicker.accept='.json,application/json';diskPicker.hidden=true;
+        diskPicker.addEventListener('change',async()=>{const file=diskPicker.files?.[0],request=++importRequest;diskPicker.value='';if(!file)return;
+            if(file.size>1000000){dialog('Import failed',['Disk backup is too large.']);return;}
+            try{const raw=await file.text();if(state.phase==='desktop'&&request===importRequest&&!state.launch)previewImport(raw);}catch(e){if(state.phase==='desktop'&&request===importRequest&&!state.launch)dialog('Import failed',['This backup could not be read.','The current disk is unchanged.']);}});
+        root.appendChild(diskPicker);
         desktop.append(canvas,controls,status);viewport.append(desktop);monitor.append(viewport);root.append(monitor);document.body.append(root);
         desktop.addEventListener('click',e=>{if(e.target===canvas||e.target===controls){state.menu=null;deselect();}});
         window.addEventListener('resize',fit);
     }
     function leave() {
-        timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);state.phase='off';state.menu=null;state.modal=null;state.launch=null;lastFileClick=null;
+        timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);importRequest++;state.phase='off';state.menu=null;state.modal=null;state.launch=null;lastFileClick=null;
         if(root)root.hidden=true;if(editor){editor.remove();editor=null;}
         document.body.classList.remove('geos-active');callbacks.onExit();
     }
     function boot(options) {
-        if(state.phase!=='off')return;callbacks=options;state.phase='loading';setup();
+        if(state.phase!=='off')return;callbacks=options;state.phase='loading';setup();loadDisk();
         state.page=0;state.view='icon';state.diskOpen=true;state.selected.clear();state.menu=null;
         options.output('SEARCHING FOR GEOS');
         const delay=matchMedia('(prefers-reduced-motion: reduce)').matches?0:650;
         timers.push(setTimeout(()=>options.output('FOUND GEOS'),delay));
         timers.push(setTimeout(()=>options.output('LOADING'),delay*2));
-        timers.push(setTimeout(()=>{state.phase='desktop';root.hidden=false;document.body.classList.add('geos-active');fit();render();desktop.focus();say('GEOS 2.0 desktop. Tab to explore menus and files.');clockTimer=setInterval(()=>{if(!state.modal&&!state.menu)render();},30000);},delay*3));
+        timers.push(setTimeout(()=>{state.phase='desktop';root.hidden=false;document.body.classList.add('geos-active');fit();render();desktop.focus();say(state.storageIssue?state.storageIssue+' Changes are session only. Use disk > export for backup.':'GEOS 2.0 desktop. Tab to explore menus and files.');clockTimer=setInterval(()=>{if(!state.modal&&!state.menu)render();},30000);},delay*3));
     }
     document.addEventListener('keydown',event=>{
         if(state.phase==='off')return;
