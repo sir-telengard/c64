@@ -379,10 +379,11 @@
         if(state.phase!=='off')return;callbacks=options;state.phase='loading';setup();loadDisk();
         state.page=0;state.view='icon';state.diskOpen=true;state.selected.clear();state.menu=null;
         options.output('SEARCHING FOR GEOS');
-        const delay=matchMedia('(prefers-reduced-motion: reduce)').matches?0:650;
+        // Static loading text still needs reading time when reduced motion is enabled.
+        const delay=900;
         timers.push(setTimeout(()=>options.output('FOUND GEOS'),delay));
         timers.push(setTimeout(()=>options.output('LOADING'),delay*2));
-        timers.push(setTimeout(()=>{state.phase='desktop';root.hidden=false;document.body.classList.add('geos-active');fit();render();desktop.focus();say(state.storageIssue?state.storageIssue+' Changes are session only. Use disk > export for backup.':'GEOS 2.0 desktop. Tab to explore menus and files.');clockTimer=setInterval(()=>{if(!state.modal&&!state.menu)render();},30000);},delay*3));
+        timers.push(setTimeout(()=>{state.phase='desktop';root.hidden=false;document.body.classList.add('geos-active');fit();render();desktop.focus();say(state.storageIssue?state.storageIssue+' Changes are session only. Use disk > export for backup.':'GEOS 2.0 desktop. Tab to explore menus and files.');clockTimer=setInterval(()=>{if(!state.modal&&!state.menu)render();},30000);},delay*4));
     }
     document.addEventListener('keydown',event=>{
         if(state.phase==='off')return;

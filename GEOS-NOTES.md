@@ -2,7 +2,7 @@
 
 At the BASIC prompt, enter `LOAD "GEOS",8,1`. Case and spaces around arguments are accepted. GEOS is intentionally absent from the BASIC disk listing.
 
-The command shows SEARCHING / FOUND / LOADING and opens a browser recreation of the English GEOS 64 2.0 deskTop. No RUN is required for this easter egg. With reduced motion enabled, the delay is skipped. Escape cancels loading.
+The command shows SEARCHING / FOUND / LOADING in readable stages and opens a browser recreation of the English GEOS 64 2.0 deskTop after 3.6 seconds. No RUN is required for this easter egg. Reduced motion does not skip the static loading messages. Escape cancels loading.
 
 ## Included
 
@@ -59,3 +59,5 @@ Run `node --test tests/geos-open.test.cjs` and `node --check script.js`. The 12 
 ## Persistence validation
 
 Run `node --test tests/geos-open.test.cjs tests/geos-storage.test.cjs`. All 28 tests cover the Open workflow plus fresh-page save/reload, trash restoration, disk name/pattern and association persistence, legacy Note Pad migration, version 1 upgrades, corrupt/newer snapshots and recovery, storage denial and quotas, conflicting tabs (including import confirmation), independent copied notes, downloadable JSON round trips, import cancellation/validation/write failures, late asynchronous file reads after returning to BASIC, and capacity reserved for trash restoration. The shared harness supplies DOM/canvas/storage substitutes; actual browser download/file-picker behavior and original GEOS runtime parity are not established by these tests.
+
+`node --test tests/geos-boot.test.cjs tests/geos-open.test.cjs tests/geos-storage.test.cjs` runs all 31 checks. The boot checks use a controllable clock to verify that SEARCHING, FOUND, and LOADING precede desktop activation with either motion preference, and that Escape cancels pending stages.

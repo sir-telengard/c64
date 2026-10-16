@@ -44,14 +44,25 @@ function desktop(options = {}) {
     const documentListeners = new Map();
     document = { createElement: tag => new Element(tag), addEventListener(key, fn) { documentListeners.set(key, fn); } };
     document.body = new Element('body'); document.activeElement = document.body;
-    const timers = [], storage = options.storage ?? new Map(), downloads = [];
+    const timers = new Map(), storage = options.storage ?? new Map(), downloads = [], output = [];
+    let now = 0, nextTimer = 1;
+    function advance(ms) {
+        const end = now + ms;
+        while (true) {
+            const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+            if (!next) break;
+            timers.delete(next[0]); now = next[1].at; next[1].fn();
+        }
+        now = end;
+    }
     const sandbox = {
         document, innerWidth: 1024, innerHeight: 768,
         localStorage: { getItem: key => { if (options.failRead?.(key)) throw new Error('Storage denied'); return storage.get(key) ?? null; },
             setItem: (key, value) => { if (options.failWrite?.(key, value)) throw new Error('Storage quota exceeded'); storage.set(key, String(value)); } },
         Blob, URL: { createObjectURL: blob => { downloads.push(blob); return 'blob:test'; }, revokeObjectURL() {} },
-        matchMedia: () => ({ matches: true }),
-        setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, setInterval() {}, clearInterval() {},
+        matchMedia: () => ({ matches: options.reducedMotion ?? true }),
+        setTimeout: (fn, delay = 0) => { const id = nextTimer++; timers.set(id, { fn, at: now + delay }); return id; },
+        clearTimeout: id => timers.delete(id), setInterval() {}, clearInterval() {},
         addEventListener() {}
     };
     sandbox.window = sandbox;
@@ -60,10 +71,10 @@ function desktop(options = {}) {
     assert.ok(end > 0, 'GEOS closure found');
     const geos = source.slice(0, end) + '\n globalThis.geosTest = {files,state,act,openFile,closeModal,launchById,applications,selectFile,diskSnapshot,decodeDisk,persistDisk,previewImport,exportDisk,get picker(){return diskPicker},get editor(){return editor},get controls(){return controls}};\n})();';
     vm.runInNewContext(geos, sandbox);
-    sandbox.GEOS.boot({ output() {}, onExit() {} });
-    timers.splice(0).forEach(fn => fn());
+    sandbox.GEOS.boot({ output: text => output.push(text), onExit() {} });
+    if (!options.manualBoot) advance(4000);
     const api = sandbox.geosTest;
-    return { api, storage, document, downloads, file: name => api.files.find(file => file.name === name),
+    return { api, storage, document, downloads, output, advance, file: name => api.files.find(file => file.name === name),
         key: (key, target = document.activeElement) => documentListeners.get('keydown')({ key, target, preventDefault() {}, stopImmediatePropagation() {} }) };
 }
 
