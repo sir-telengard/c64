@@ -11,14 +11,22 @@
     };
     Object.assign(alphabet, {"a":"0000/0000/0110/0001/0111/1001/0111","b":"1000/1000/1110/1001/1001/1001/1110","d":"0001/0001/0111/1001/1001/1001/0111","e":"0000/0000/0110/1001/1111/1000/0111","g":"0000/0111/1001/1001/0111/0001/1110","h":"1000/1000/1110/1001/1001/1001/1001","n":"0000/0000/1110/1001/1001/1001/1001","o":"0000/0000/0110/1001/1001/1001/0110","p":"0000/1110/1001/1001/1110/1000/1000","q":"0000/0111/1001/1001/0111/0001/0001","u":"0000/0000/1001/1001/1001/1001/0111","v":"00000/00000/10001/10001/01010/01010/00100"});
     const glyphs = Object.fromEntries(Object.entries(alphabet).map(([key, rows]) => [key, rows.split('/')]));
+    const GEOS_TYPE = Object.freeze({SYSTEM:4, ACCESSORY:5, APPLICATION:6, DOCUMENT:7, PRINTER:9, INPUT:10, BOOT:12, AUTO_EXEC:14});
+    const diskId = 'geos-demo';
+    const fileTypes = {4:'system',5:'accessory',6:'application',7:'document',9:'printer driver',10:'input driver',12:'system boot',14:'application'};
+    // Application IDs describe behavior; icons and display names can change independently.
     const files = [
-        ['GEOS','system',12,'system'],['GEOBOOT','system',4,'system'],['DESK TOP','application',22,'desktop'],['CONFIGURE','application',8,'configure'],
-        ['preference mgr','accessory',3,'preferences'],['pad color mgr','accessory',2,'colors'],['COMM 1351','input driver',2,'mouse'],['MPS-801','printer driver',4,'printer'],
-        ['note pad','accessory',3,'note'],['calculator','accessory',3,'calculator'],['alarm clock','accessory',2,'clock'],['READ ME','document',1,'readme']
-    ].map(([name,type,size,icon],id)=>({id,name,type,size,icon,locked:type==='system'}));
-    const state = { phase:'off', page:0, view:'icon', diskOpen:true, diskName:'GEOS 2.0', selected:new Set(), menu:null, hover:-1, modal:null, trash:null, note:'', pattern:0 };
+        ['GEOS',4,12,'system'],['GEOBOOT',12,4,'system'],['DESK TOP',6,22,'desktop','desktop'],['CONFIGURE',6,8,'configure','configure'],
+        ['preference mgr',5,3,'preferences','preferences'],['pad color mgr',5,2,'colors','colors'],['COMM 1351',10,2,'mouse'],['MPS-801',9,4,'printer'],
+        ['note pad',5,3,'note','note'],['calculator',5,3,'calculator','calculator'],['alarm clock',5,2,'clock','clock'],['READ ME',7,1,'readme'],
+        ['TEXT READER',6,3,'readme','text-reader']
+    ].map(([name,geosType,size,icon,applicationId],id)=>({id,name,geosType,type:fileTypes[geosType],size,icon,applicationId,
+        diskId,structure:[6,7,14].includes(geosType)?'VLIR':'sequential',locked:[4,12].includes(geosType)}));
+    Object.assign(files[11],{parentApplication:'TEXT READER',parentDiskId:diskId,
+        content:['You found the hidden disk!','Double-click files to open.','Turn the corner for page 2.','options > BASIC to return.']});
+    const state = { phase:'off', page:0, view:'icon', diskOpen:true, diskId, diskName:'GEOS 2.0', selected:new Set(), menu:null, hover:-1, modal:null, launch:null, trash:null, note:'', pattern:0 };
     let root, desktop, canvas, ctx, controls, status, editor, callbacks, clockTimer;
-    let timers = [], focusKey = null, calc = { display:'0', left:null, op:null, fresh:true };
+    let timers = [], focusKey = null, lastFileClick = null, calc = { display:'0', left:null, op:null, fresh:true };
     const menus = {
         geos:[['GEOS info','geos-info'],['deskTop info','desktop-info'],null,['select printer','printer'],['select input','input'],null,['preference mgr','preferences'],['pad color mgr','colors'],['alarm clock','clock'],['note pad','note'],['calculator','calculator']],
         file:[['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
@@ -52,7 +60,7 @@
         if(options.expanded!==undefined)el.setAttribute('aria-expanded',String(options.expanded));
         if(options.selected!==undefined)el.setAttribute('aria-pressed',String(options.selected));
         el.disabled=!!options.disabled;
-        el.addEventListener('click',action);
+        el.addEventListener('click',event=>{if(!key.startsWith('file-'))lastFileClick=null;action(event);});
         if(options.doubleClick)el.addEventListener('dblclick',options.doubleClick);
         if(options.hover)el.addEventListener('pointerenter',options.hover);
         controls.appendChild(el);return el;
@@ -74,7 +82,7 @@
         else {text('G',x+5,y+6);text('S',x+12,y+11);}
     }
     function available() {
-        const list=state.trash?files.filter(f=>f.id!==state.trash.id):[...files];
+        const list=files.filter(f=>f.diskId===state.diskId&&f.id!==state.trash?.id);
         if(state.view==='name')list.sort((a,b)=>a.name.localeCompare(b.name));
         if(state.view==='size')list.sort((a,b)=>b.size-a.size);
         if(state.view==='type')list.sort((a,b)=>a.type.localeCompare(b.type));
@@ -85,7 +93,15 @@
     function pages() {return Math.max(1,Math.ceil(available().length/8));}
     function selectedFiles() {return available().filter(f=>state.selected.has(f.id));}
     function deselect() {state.selected.clear();render();}
-    function selectFile(file,event) {if(event.shiftKey){if(state.selected.has(file.id))state.selected.delete(file.id);else state.selected.add(file.id);}else{state.selected.clear();state.selected.add(file.id);}say(file.name+' selected. Press Enter to open.');render();}
+    function selectFile(file,event) {
+        // Selection redraws the buttons, so track pointer clicks by file identity.
+        const elapsed=event.timeStamp-(lastFileClick?.timeStamp??-Infinity);
+        const doubleClick=event.detail>0&&!event.shiftKey&&lastFileClick?.id===file.id&&elapsed>=0&&elapsed<=500;
+        lastFileClick=event.detail>0&&!event.shiftKey?{id:file.id,timeStamp:event.timeStamp}:null;
+        if(event.shiftKey){if(state.selected.has(file.id))state.selected.delete(file.id);else state.selected.add(file.id);}else{state.selected.clear();state.selected.add(file.id);}
+        say(file.name+' selected. Press Enter to open.');
+        if(doubleClick){lastFileClick=null;openFile(file);}else render();
+    }
     function drawDesktop() {
         dither(0,0,W,H);
         if(state.pattern)fill(0,12,W,H-12,'#9999aa');
@@ -101,8 +117,8 @@
         control('disk-close','Close disk',241,15,17,12,()=>act('disk-close'));
         fill(1,28,262,12);line(1,39,262,39);
         if(state.diskOpen){const used=available().reduce((sum,f)=>sum+f.size,0);text(available().length+' files',5,30);text(used+' Kbytes used',68,30);text((165-used)+' Kbytes free',172,30);
-            if(state.view==='icon')pageFiles().forEach((file,i)=>{const x=9+(i%4)*63,y=45+Math.floor(i/4)*43;icon(file.icon,x+19,y);label(file.name,x,y+24,61,state.selected.has(file.id));const el=control('file-'+file.id,file.name,x,y,61,35,e=>selectFile(file,e),{doubleClick:()=>openFile(file),selected:state.selected.has(file.id)});el.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();openFile(file);}});});
-            else pageFiles().forEach((file,i)=>{const y=42+i*10;if(state.selected.has(file.id))fill(3,y,257,10,INK);const c=state.selected.has(file.id)?PAPER:INK;text(file.name,7,y+1,c);text(file.type,106,y+1,c);text(file.size+'K',232,y+1,c);control('file-'+file.id,file.name,3,y,257,10,e=>selectFile(file,e),{doubleClick:()=>openFile(file),selected:state.selected.has(file.id)});});
+            if(state.view==='icon')pageFiles().forEach((file,i)=>{const x=9+(i%4)*63,y=45+Math.floor(i/4)*43;icon(file.icon,x+19,y);label(file.name,x,y+24,61,state.selected.has(file.id));const el=control('file-'+file.id,file.name,x,y,61,35,e=>selectFile(file,e),{selected:state.selected.has(file.id)});el.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();openFile(file);}});});
+            else pageFiles().forEach((file,i)=>{const y=42+i*10;if(state.selected.has(file.id))fill(3,y,257,10,INK);const c=state.selected.has(file.id)?PAPER:INK;text(file.name,7,y+1,c);text(file.type,106,y+1,c);text(file.size+'K',232,y+1,c);control('file-'+file.id,file.name,3,y,257,10,e=>selectFile(file,e),{selected:state.selected.has(file.id)});});
         }
         for(let x=6;x<239;x+=12){box(x,138,7,9);fill(x+2,140,3,1);}
         fill(239,128,24,15);line(239,142,262,128);text(String(state.page+1),246,132);
@@ -120,11 +136,18 @@
         let y=13;items.forEach((item,i)=>{if(!item){line(x+1,y+1,x+w-2,y+1);y+=4;return;}const [name,action,shortcut]=item;const active=i===state.hover;if(active)fill(x+1,y,w-2,12,INK);text(name,x+4,y+2,active?PAPER:INK);if(shortcut)text('C='+shortcut,x+w-25,y+2,active?PAPER:INK);
             if(addControls)control('item-'+action,name,x+1,y,w-2,12,()=>act(action),{role:'menuitem',hover:()=>{if(state.hover!==i){state.hover=i;drawMenu(false);}}});y+=12;});
     }
-    function dialog(title,lines,buttons=[['OK',closeModal]],kind='message') {state.menu=null;state.modal={title,lines,buttons,kind};say(title+'. '+lines.join(' '));render();focusFirst();}
-    function closeModal() {state.modal=null;if(editor){editor.remove();editor=null;}render();const target=controls.querySelector('[data-key="menu-geos"]');if(target)target.focus();}
+    function dialog(title,lines,buttons=[['OK',closeModal]],kind='message',value='') {lastFileClick=null;if(editor){editor.remove();editor=null;}state.menu=null;state.modal={title,lines,buttons,kind,value};say(title+'. '+lines.join(' '));render();focusFirst();}
+    function closeModal() {
+        state.modal=null;if(editor){editor.remove();editor=null;}
+        const saved=state.launch?.desktop;state.launch=null;
+        if(saved){state.page=saved.page;state.view=saved.view;state.diskId=saved.diskId;state.diskOpen=saved.diskOpen;state.selected=new Set(saved.selected);}
+        render();
+        const key=saved?.focusKey||'menu-geos';
+        const target=[...controls.children].find(el=>el.dataset.key===key)||controls.querySelector('[data-key="menu-geos"]');if(target)target.focus();
+    }
     function focusFirst() {const target=editor||controls.querySelector('[data-modal="true"]');if(target)target.focus();}
     function drawModal() {
-        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(m.kind==='note'){x=40;y=24;w=240;h=161;}
+        const m=state.modal;let x=34,y=42,w=252,h=116;if(m.kind==='calculator'){x=82;y=25;w=156;h=165;}if(m.kind==='note'||m.kind==='reader'){x=40;y=24;w=240;h=161;}
         // The active dialog blocks every desktop control, including keyboard focus.
         controls.replaceChildren();fill(x+3,y+3,w,h,INK);fill(x,y,w,h);box(x,y,w,h);box(x+2,y+2,w-4,h-4);fill(x+3,y+3,w-6,12,INK);center(m.title,x+4,y+5,w-8,PAPER);
         const modalControl=(key,name,bx,by,bw,fn)=>{button(key,name,bx,by,bw,fn);controls.lastElementChild.dataset.modal='true';};
@@ -132,8 +155,9 @@
             fill(x+10,y+23,w-20,16);box(x+10,y+23,w-20,16);const display=calc.display.slice(0,18);text(display,x+w-15-width(display),y+28);
             const keys=['7','8','9','/','4','5','6','*','1','2','3','-','C','0','=','+'];keys.forEach((key,i)=>modalControl('calc-'+key,key,x+10+(i%4)*35,y+47+Math.floor(i/4)*23,29,()=>calculate(key)));
             modalControl('modal-close','Close',x+48,y+h-20,60,closeModal);
-        } else if(m.kind==='note') {
-            if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label','Note pad text');editor.maxLength=2000;editor.value=state.note;editor.addEventListener('input',()=>{state.note=editor.value;try{localStorage.setItem('c64-geos-note',state.note);}catch(e){say('Note is kept for this session. Browser storage is unavailable.');}});desktop.appendChild(editor);}
+        } else if(m.kind==='note'||m.kind==='reader') {
+            if(!editor){editor=element('textarea','geos-editor');editor.setAttribute('aria-label',m.kind==='reader'?'Document text':'Note pad text');editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:state.note;
+                if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;try{localStorage.setItem('c64-geos-note',state.note);}catch(e){say('Note is kept for this session. Browser storage is unavailable.');}});}desktop.appendChild(editor);}
             Object.assign(editor.style,{left:(x+8)+'px',top:(y+22)+'px',width:(w-16)+'px',height:'108px'});
             modalControl('modal-close','Close',x+w-67,y+h-21,58,closeModal);
         } else {
@@ -156,12 +180,49 @@
     function rename(title,value,save) {
         dialog(title,['Enter a new name:'],[['OK',()=>{const name=editor.value.trim();if(!name){say('Enter a name.');return;}save(name);closeModal();}],['Cancel',closeModal]],'rename');state.modal.value=value;editor.value=value;editor.select();
     }
+    const applications = new Map([
+        ['desktop',{geosType:6,open:()=>closeModal()}],
+        ['configure',{geosType:6,open:()=>dialog('CONFIGURE 2.0',['Drive A: 1541   Device 8','Input: mouse / keyboard','64K RAM'])}],
+        ['preferences',{geosType:5,open:()=>dialog('Preference Manager',['Pointer: mouse / touch','Display: 320 x 200','Tab: select   Enter: open','Esc: close   F1: shortcuts'])}],
+        ['colors',{geosType:5,open:()=>dialog('Pad Color Manager',['Choose a desktop pattern.'],[['Change',()=>{state.pattern=state.pattern?0:1;render();}],['Close',closeModal]])}],
+        ['clock',{geosType:5,open:()=>{const now=new Date();dialog('Alarm Clock',[now.toLocaleDateString('en-US'),now.toLocaleTimeString('en-US'),'System clock']);}}],
+        ['calculator',{geosType:5,open:()=>{calc={display:'0',left:null,op:null,fresh:true};dialog('Calculator',[],[['Close',closeModal]],'calculator');}}],
+        ['note',{geosType:5,open:()=>{try{state.note=localStorage.getItem('c64-geos-note')||state.note;}catch(e){/* Session-only note when storage is blocked. */}dialog('Note Pad',[],[['Close',closeModal]],'note');}}],
+        ['text-reader',{geosType:6,open:document=>document?dialog(document.name,[],[['Close',closeModal]],'reader',Array.isArray(document.content)?document.content.join('\n'):String(document.content??'')):
+            dialog('Text Reader',['Open a document from','the disk to read it.'],[['Close',closeModal]])}]
+    ]);
+    function cannotOpen() {dialog('Open',["This file can't be opened",'from the deskTop.']);}
+    function launchApplication(file,document=null) {
+        const app=applications.get(file.applicationId);
+        const type=file.geosType===GEOS_TYPE.AUTO_EXEC?GEOS_TYPE.APPLICATION:file.geosType;
+        if(!app||app.geosType!==type){dialog('Application unavailable',[file.name,'This application is not','available yet.']);return;}
+        if(state.launch)return;
+        state.launch={fileId:file.id,documentId:document?.id??null,desktop:{page:state.page,view:state.view,diskOpen:state.diskOpen,diskId:state.diskId,
+            selected:[...state.selected],focusKey:document?'file-'+document.id:'file-'+file.id}};
+        app.open(document);
+    }
+    function launchById(applicationId) {
+        const file=available().find(f=>f.applicationId===applicationId);
+        if(!file){dialog('Application unavailable',['This application is not','on the current disk.']);return;}
+        launchApplication(file);
+    }
     function openFile(file) {
         state.menu=null;
-        if(['note','calculator','clock','preferences','colors','readme'].includes(file.icon)){act(file.icon);return;}
-        if(file.icon==='desktop'){state.page=0;state.selected.clear();render();return;}
-        if(file.icon==='configure'){dialog('CONFIGURE 2.0',['Drive A: 1541   Device 8','Input: mouse / keyboard','64K RAM']);return;}
-        dialog(file.name,[file.type==='system'?'This is a GEOS system file.':'This is a GEOS device driver.','It is used by the system.']);
+        if(selectedFiles().length>1){dialog('Open',['No multiple file operation for','this feature.']);return;}
+        if(!state.diskOpen||!available().includes(file)){dialog('Open',['This file is not on','the current disk.']);return;}
+        switch(file.geosType) {
+            case GEOS_TYPE.ACCESSORY:
+            case GEOS_TYPE.APPLICATION:
+            case GEOS_TYPE.AUTO_EXEC:launchApplication(file);return;
+            case GEOS_TYPE.DOCUMENT:{
+                if(!file.parentApplication){cannotOpen();return;}
+                const app=available().find(f=>[GEOS_TYPE.APPLICATION,GEOS_TYPE.AUTO_EXEC].includes(f.geosType)&&
+                    f.diskId===(file.parentDiskId||file.diskId)&&f.name.toUpperCase()===file.parentApplication.toUpperCase());
+                if(!app){dialog('Application not found',[file.parentApplication,'is not on the current disk.','Restore the application','and choose Retry.'],[['Retry',()=>openFile(file)],['Cancel',closeModal]]);return;}
+                launchApplication(app,file);return;
+            }
+            default:cannotOpen();
+        }
     }
     function act(action) {
         state.menu=null;state.hover=-1;
@@ -171,7 +232,7 @@
             case 'geos-info':dialog('GEOS info',['GEOS 64   Version 2.0','Graphic Environment','Operating System','Berkeley Softworks 1988']);return;
             case 'desktop-info':dialog('deskTop info',['deskTop   Version 2.0','A browser recreation for','GENX JAY','jasonstum.com']);return;
             case 'open':if(file){openFile(file);return;}dialog('Open',['Select a file first.']);return;
-            case 'info':if(!file){dialog('File info',['Select a file first.']);return;}dialog('File info',[file.name,file.type,file.size+' Kbytes',file.locked?'write protected':'not write protected']);return;
+            case 'info':if(!file){dialog('File info',['Select a file first.']);return;}dialog('File info',[file.name,file.type,file.size+' Kbytes',file.locked?'write protected':'not write protected',file.parentApplication?'opens with '+file.parentApplication:file.structure]);return;
             case 'rename':if(!file){dialog('Rename',['Select a file first.']);return;}if(file.locked){dialog('Rename',['This system file is protected.']);return;}rename('Rename file',file.name,name=>{file.name=name;});return;
             case 'duplicate':if(!file){dialog('Duplicate',['Select a file first.']);return;}if(available().reduce((n,f)=>n+f.size,0)+file.size>165){dialog('Duplicate',['Disk full.']);return;}files.push({...file,id:Math.max(...files.map(f=>f.id))+1,name:('copy '+file.name).slice(0,16),locked:false});break;
             case 'delete':if(!file){dialog('Delete',['Select a file first.']);return;}if(file.locked){dialog('Delete',['This system file is protected.']);return;}dialog('Delete file',[file.name,'Move to the waste basket?'],[['Delete',()=>{state.trash=file;state.selected.clear();state.page=Math.min(state.page,pages()-1);closeModal();}],['Cancel',closeModal]]);return;
@@ -188,12 +249,7 @@
             case 'page-last':state.page=pages()-1;state.selected.clear();break;
             case 'printer':dialog('Select printer',['MPS-801','Printer driver selected.']);return;
             case 'input':dialog('Select input',['Mouse / touch / keyboard','Input driver selected.']);return;
-            case 'preferences':dialog('Preference Manager',['Pointer: mouse / touch','Display: 320 x 200','Tab: select   Enter: open','Esc: close   F1: shortcuts']);return;
-            case 'colors':dialog('Pad Color Manager',['Choose a desktop pattern.'],[['Change',()=>{state.pattern=state.pattern?0:1;render();}],['Close',closeModal]]);return;
-            case 'clock':{const now=new Date();dialog('Alarm Clock',[now.toLocaleDateString('en-US'),now.toLocaleTimeString('en-US'), 'System clock']);return;}
-            case 'calculator':calc={display:'0',left:null,op:null,fresh:true};dialog('Calculator',[],[['Close',closeModal]],'calculator');return;
-            case 'note':try{state.note=localStorage.getItem('c64-geos-note')||state.note;}catch(e){/* Session-only note when storage is blocked. */}dialog('Note Pad',[],[['Close',closeModal]],'note');return;
-            case 'readme':dialog('READ ME',['You found the hidden disk!','Double-click files to open.','Turn the corner for page 2.','options > BASIC to return.']);return;
+            case 'preferences':case 'colors':case 'clock':case 'calculator':case 'note':launchById(action);return;
             case 'shortcuts':dialog('Shortcuts',['Tab / arrows: select controls','Enter / Space: activate','Page Up / Down: turn page','Esc: close   Alt+B: BASIC']);return;
             case 'quit':dialog('Return to BASIC',['Leave GEOS and return to BASIC?'],[['OK',leave],['Cancel',closeModal]]);return;
         }
@@ -212,7 +268,7 @@
         window.addEventListener('resize',fit);
     }
     function leave() {
-        timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);state.phase='off';state.menu=null;state.modal=null;
+        timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);state.phase='off';state.menu=null;state.modal=null;state.launch=null;lastFileClick=null;
         if(root)root.hidden=true;if(editor){editor.remove();editor=null;}
         document.body.classList.remove('geos-active');callbacks.onExit();
     }
