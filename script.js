@@ -31,7 +31,79 @@
     let diskLoaded=false, writesBlocked=false, lastSavedRaw=null, importRequest=0;
     const PAINT_W=128, PAINT_H=56, paintColors=['#ffffff','#111111','#880000','#00aa55','#0000aa','#aa44cc','#eeee77','#0088ff'];
     let painting=null, paintSurface=null;
+    let mountedD64=null, d64Picker=null, d64Request=0;
+    function parseD64(input) {
+        const bytes=new Uint8Array(input);
+        if(![174848,175531].includes(bytes.length))throw new Error('Use a 35-track D64 image.');
+        const sectors=Array.from({length:35},(_,i)=>i<17?21:i<24?19:i<30?18:17),warnings=[];
+        function sector(track,number){
+            if(!Number.isInteger(track)||track<1||track>35||!Number.isInteger(number)||number<0||number>=sectors[track-1])throw new Error('Invalid track or sector.');
+            const offset=(sectors.slice(0,track-1).reduce((a,b)=>a+b,0)+number)*256;return bytes.subarray(offset,offset+256);
+        }
+        // GEOS names use ASCII-compatible mixed case; map PETSCII high letters
+        // and shifted spaces, substituting unsupported control/graphic glyphs.
+        function diskText(data){let out='';for(let code of data){if(code===0)break;if(code===160)code=32;if(code>=193&&code<=218)code-=128;out+=code>=32&&code<=126?String.fromCharCode(code):'?';}return out.trimEnd();}
+        const bam=sector(18,0),isGeos=diskText(bam.subarray(173,184))==='GEOS format';
+        if(bam[2]!==65)throw new Error('Invalid 1541 disk header.');
+        let freeBlocks=0;
+        for(let track=1;track<=35;track++){
+            let free=0;for(let s=0;s<sectors[track-1];s++)if(bam[track*4+1+Math.floor(s/8)]&(1<<(s%8)))free++;
+            if(free!==bam[track*4])warnings.push('BAM count differs on track '+track+'.');
+            if(track!==18)freeBlocks+=free;
+        }
+        if(bytes.length===175531){const errors=bytes.subarray(174848).filter(code=>code!==1).length;if(errors)warnings.push(errors+' sectors flagged in error table.');}
+        const result=[],seen=new Set();
+        function entries(block,border=false){
+            for(let slot=0;slot<8;slot++){
+                const e=block.subarray(slot*32,slot*32+32),dos=e[2]&7;if(!dos)continue;
+                const name=diskText(e.subarray(5,21))||'(unnamed)',blocks=e[30]+e[31]*256;
+                const file={id:result.length,name,geosType:0,type:['DEL','SEQ','PRG','USR','REL'][dos]||'unknown',size:blocks,blocks,icon:'readme',
+                    diskId:'d64-view',structure:'sequential',locked:!!(e[2]&64),native:true,dosType:dos,dosClosed:!!(e[2]&128),border};
+                if(!file.dosClosed)warnings.push(name+': file was not closed.');
+                if(isGeos&&e[21]&&e[24]>0&&e[24]<=15&&e[23]<=1){
+                    file.geosType=e[24];file.type=fileTypes[e[24]];file.structure=e[23]?'VLIR':'sequential';
+                    try{
+                        const h=sector(e[21],e[22]);
+                        if(h[0]!==0||h[1]!==255||h[2]!==3||h[3]!==21||h[4]!==191)throw new Error('Invalid info sector.');
+                        file.nativeIcon=Array.from(h.subarray(5,68));file.className=diskText(h.subarray(77,96));
+                        if(file.geosType===7)file.parentClass=diskText(h.subarray(117,137));
+                    }catch(error){warnings.push(name+': info sector unavailable.');}
+                    const year=e[25]+(e[25]>=80?1900:2000),month=e[26],day=e[27],hour=e[28],minute=e[29];
+                    const date=new Date(Date.UTC(year,month-1,day,hour,minute));
+                    if(month>=1&&month<=12&&day>=1&&day<=31&&hour<24&&minute<60&&date.getUTCDate()===day){file.nativeDate=year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0')+' '+String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');}
+                }
+                result.push(file);
+            }
+        }
+        let [track,number]=bam;
+        while(track){const key=track+'/'+number;if(seen.has(key))throw new Error('Directory contains a loop.');seen.add(key);const block=sector(track,number);entries(block);[track,number]=block;}
+        if(isGeos&&bam[171]){
+            try{if(!seen.has(bam[171]+'/'+bam[172]))entries(sector(bam[171],bam[172]),true);}catch(error){warnings.push('Border directory unavailable.');}
+        }
+        return {files:result,diskName:diskText(bam.subarray(144,160))||'UNTITLED',freeBlocks,usedBlocks:664-freeBlocks,
+            isGeos,warnings,bytes,filename:'disk.d64'};
+    }
+    function previewD64(input,filename='disk.d64') {
+        if(state.launch)return;
+        let image;try{image=parseD64(input);}catch(error){dialog('D64 not opened',[error.message,'The current disk is unchanged.']);return;}
+        image.filename=filename;
+        dialog('Open D64',[image.diskName,image.files.length+' files - read only',image.warnings.length?image.warnings.length+' metadata warnings.':'Directory ready to view.','Your web disk will be kept.'],[['Open',()=>mountD64(image)],['Cancel',closeModal]]);
+    }
+    function mountD64(image){
+        if(state.launch)return;importRequest++;d64Request++;
+        const web=mountedD64?.web||{files:files.slice(),diskId:state.diskId,diskName:state.diskName,trash:state.trash,note:state.note,
+            page:state.page,view:state.view,diskOpen:state.diskOpen,selected:[...state.selected],snapshot:diskSnapshot()};
+        mountedD64={...image,web};files.splice(0,files.length,...image.files);state.diskId='d64-view';state.diskName=image.diskName;state.trash=null;state.page=0;state.view='icon';state.diskOpen=true;state.selected.clear();closeModal();
+        say(image.diskName+'. Read-only D64. Use disk > web disk to return.');
+    }
+    function returnWebDisk(redraw=true){
+        d64Request++;if(!mountedD64)return;const web=mountedD64.web;mountedD64=null;importRequest++;files.splice(0,files.length,...web.files);
+        for(const key of ['diskId','diskName','trash','note','page','view','diskOpen'])state[key]=web[key];state.selected=new Set(web.selected);
+        if(redraw){closeModal();say('Returned to your web disk.');}
+    }
+    function readOnlyD64(){dialog('Read-only D64',['This image is open for viewing.','Use disk > web disk to return.']);}
     function diskSnapshot() {
+        if(mountedD64)return JSON.parse(JSON.stringify(mountedD64.web.snapshot));
         return {format:'geos-web-disk',version:files.some(file=>file.picture)?3:2,disk:{id:state.diskId,name:state.diskName,pattern:state.pattern},
             files:JSON.parse(JSON.stringify(files)),trashId:state.trash?.id??null};
     }
@@ -84,6 +156,7 @@
     }
     function storageFailed(message) {state.storageIssue=message;if(status)say(message+' Changes remain in this session. Use disk > export.');}
     function persistDisk() {
+        if(mountedD64)return false;
         if(writesBlocked)return false;
         try {
             const previous=localStorage.getItem(DISK_KEY);
@@ -116,9 +189,11 @@
         setTimeout(()=>URL.revokeObjectURL(url),1000);
     }
     function exportDisk() {
+        if(mountedD64){downloadFile(mountedD64.bytes,mountedD64.filename.replace(/[\\/:*?"<>|]/g,'_'),'application/octet-stream');say('Original D64 downloaded.');return;}
         downloadFile(JSON.stringify(diskSnapshot(),null,2),'geos-disk.json','application/json');say('Disk backup downloaded.');
     }
     function previewImport(raw) {
+        if(mountedD64){readOnlyD64();return;}
         let data;try{data=decodeDisk(raw);}catch(e){dialog('Import failed',['This backup could not be read.','The current disk is unchanged.']);return;}
         dialog('Import disk',[data.disk.name,data.files.length+' files','Replace the current disk?','A previous copy will be kept.'],[['Import',()=>{
             try {
@@ -136,7 +211,7 @@
         geos:[['GEOS info','geos-info'],['deskTop info','desktop-info'],null,['select printer','printer'],['select input','input'],null,['preference mgr','preferences'],['pad color mgr','colors'],['alarm clock','clock'],['note pad','note'],['calculator','calculator']],
         file:[['new text','new-text'],['new picture','new-picture'],['open','open','O'],['duplicate','duplicate','D'],['rename','rename','R'],['info','info','Q'],['delete','delete'],null,['quit','quit','Z']],
         view:[['by icon','view-icon'],['by size','view-size'],['by type','view-type'],['by date','view-date'],['by name','view-name']],
-        disk:[['open','disk-open'],['close','disk-close'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],['empty basket','trash-empty'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
+        disk:[['open','disk-open'],['close','disk-close'],['open D64','d64-open'],['web disk','web-disk'],['rename','disk-rename'],['info','disk-info'],['validate','validate'],['empty basket','trash-empty'],null,['export','disk-export'],['import','disk-import'],['previous disk','disk-previous']],
         select:[['all','select-all'],['none','select-none']],
         page:[['next','page-next'],['previous','page-previous'],['first','page-first'],['last','page-last']],
         options:[['shortcuts','shortcuts'],['BASIC','quit']]
@@ -191,7 +266,7 @@
         if(state.view==='name')list.sort((a,b)=>a.name.localeCompare(b.name));
         if(state.view==='size')list.sort((a,b)=>b.size-a.size);
         if(state.view==='type')list.sort((a,b)=>a.type.localeCompare(b.type));
-        if(state.view==='date')list.sort((a,b)=>a.id-b.id);
+        if(state.view==='date')list.sort((a,b)=>mountedD64?(a.nativeDate||'').localeCompare(b.nativeDate||'')||a.id-b.id:a.id-b.id);
         return list;
     }
     function pageFiles() {return available().slice(state.page*8,state.page*8+8);}
@@ -221,19 +296,22 @@
         fill(242,17,13,8);box(242,17,13,8);fill(245,20,7,2,INK);
         control('disk-close','Close disk',241,15,17,12,()=>act('disk-close'));
         fill(1,28,262,12);line(1,39,262,39);
-        if(state.diskOpen){const used=files.reduce((sum,f)=>sum+f.size,0);text(available().length+' files',5,30);text(used+' Kbytes used',68,30);text((165-used)+' Kbytes free',172,30);
-            if(state.view==='icon')pageFiles().forEach((file,i)=>{const x=9+(i%4)*63,y=45+Math.floor(i/4)*43;icon(file.icon,x+19,y);label(file.name,x,y+24,61,state.selected.has(file.id));const el=control('file-'+file.id,file.name,x,y,61,35,e=>selectFile(file,e),{selected:state.selected.has(file.id)});el.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();openFile(file);}});});
-            else pageFiles().forEach((file,i)=>{const y=42+i*10;if(state.selected.has(file.id))fill(3,y,257,10,INK);const c=state.selected.has(file.id)?PAPER:INK;text(file.name,7,y+1,c);text(file.type,106,y+1,c);text(file.size+'K',232,y+1,c);control('file-'+file.id,file.name,3,y,257,10,e=>selectFile(file,e),{selected:state.selected.has(file.id)});});
+        if(state.diskOpen){const used=files.reduce((sum,f)=>sum+f.size,0);text(available().length+' files',5,30);text((mountedD64?mountedD64.usedBlocks+' blocks':used+' Kbytes')+' used',68,30);text((mountedD64?mountedD64.freeBlocks+' blocks':(165-used)+' Kbytes')+' free',172,30);
+            if(state.view==='icon')pageFiles().forEach((file,i)=>{const x=9+(i%4)*63,y=45+Math.floor(i/4)*43;
+                if(file.nativeIcon){file.nativeIcon.forEach((byte,j)=>{for(let bit=0;bit<8;bit++)if(byte&(128>>bit))fill(x+19+(j%3)*8+bit,y+Math.floor(j/3),1,1,INK);});}else icon(file.icon,x+19,y);
+                label(file.name,x,y+24,61,state.selected.has(file.id));const el=control('file-'+file.id,file.name,x,y,61,35,e=>selectFile(file,e),{selected:state.selected.has(file.id)});el.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();openFile(file);}});});
+            else pageFiles().forEach((file,i)=>{const y=42+i*10;if(state.selected.has(file.id))fill(3,y,257,10,INK);const c=state.selected.has(file.id)?PAPER:INK;smallText(file.name,7,y+2,c);smallText(file.type,106,y+2,c);text(file.size+(mountedD64?'B':'K'),232,y+1,c);control('file-'+file.id,file.name,3,y,257,10,e=>selectFile(file,e),{selected:state.selected.has(file.id)});});
         }
         for(let x=6;x<239;x+=12){box(x,138,7,9);fill(x+2,140,3,1);}
         fill(239,128,24,15);line(239,142,262,128);text(String(state.page+1),246,132);
         control('page-next','Next page',239,128,24,15,()=>act('page-next'),{disabled:!state.diskOpen||state.page>=pages()-1});
         control('page-previous','Previous page',1,128,22,10,()=>act('page-previous'),{disabled:!state.diskOpen||state.page===0});
-        icon('drive',281,26);text('A',286,31);label('GEOS',273,48,43,state.diskOpen);
+        icon('drive',281,26);text('A',286,31);label(mountedD64?'D64':'GEOS',273,48,43,state.diskOpen);
         control('drive-a','Open GEOS disk in drive A',274,23,43,36,()=>act('disk-open'));
         icon('trash',281,157);if(state.trash)fill(287,166,9,7,INK);control('trash','Waste basket',274,153,43,35,showWasteBasket);
         text('GEOS',276,186);text('2.0',284,194);
-        text('deskTop',8,185);text('V2.0',8,194);text(state.storageIssue?'session only':'disk saved',80,185);
+        text('deskTop',8,185);text('V2.0',8,194);text(mountedD64?'D64 read only':state.storageIssue?'session only':'disk saved',80,185);
+        if(mountedD64){button('web-disk','Web disk',174,181,76,()=>act('web-disk'));}
     }
     function drawMenu(addControls=true) {
         const names=Object.keys(menus),index=names.indexOf(state.menu);let x=menuWidths.slice(0,index).reduce((a,b)=>a+b,0);const items=menus[state.menu],w=state.menu==='geos'?113:state.menu==='file'?94:96;x=Math.min(x,W-w-3);
@@ -482,6 +560,7 @@
         app.open(document);
     }
     function launchById(applicationId) {
+        if(mountedD64){readOnlyD64();return;}
         const file=available().find(f=>f.applicationId===applicationId);
         if(!file){dialog('Application unavailable',['This application is not','on the current disk.']);return;}
         launchApplication(file);
@@ -490,6 +569,7 @@
         state.menu=null;
         if(selectedFiles().length>1){dialog('Open',['No multiple file operation for','this feature.']);return;}
         if(!state.diskOpen||!available().includes(file)){dialog('Open',['This file is not on','the current disk.']);return;}
+        if(mountedD64){nativeFileInfo(file,true);return;}
         switch(file.geosType) {
             case GEOS_TYPE.ACCESSORY:
             case GEOS_TYPE.APPLICATION:
@@ -505,6 +585,7 @@
         }
     }
     function showWasteBasket() {
+        if(mountedD64){readOnlyD64();return;}
         const file=state.trash;
         if(!file){dialog('Waste basket',['The waste basket is empty.']);return;}
         dialog('Waste basket',[file.name,file.size+' Kbytes held','Restore or permanently delete?'],[['Restore',()=>{
@@ -515,6 +596,7 @@
         }],['Empty',emptyWasteBasket],['Cancel',closeModal]]);
     }
     function emptyWasteBasket() {
+        if(mountedD64){readOnlyD64();return;}
         const file=state.trash;
         if(!file){showWasteBasket();return;}
         if(file.locked){dialog('Empty waste basket',['This file is write protected.']);return;}
@@ -530,9 +612,14 @@
         }],['Cancel',showWasteBasket]]);
         state.modal.cancel=showWasteBasket;
     }
+    function nativeFileInfo(file,opening=false){
+        dialog(opening?'Native GEOS file':'File info',[file.name,file.type+' - '+file.blocks+' blocks',file.structure+(file.locked?' - protected':''),
+            file.className||('DOS '+['DEL','SEQ','PRG','USR','REL'][file.dosType]),opening?'Native execution is not available.':file.nativeDate||'No GEOS date recorded.']);
+    }
     function act(action) {
         state.menu=null;state.hover=-1;
         const selected=selectedFiles(),file=selected[0];
+        if(mountedD64&&['new-text','new-picture','duplicate','rename','delete','disk-rename','disk-import','disk-previous','trash-empty','colors','note','clock','calculator','preferences'].includes(action)){readOnlyD64();return;}
         if(action.startsWith('view-')){state.view=action.slice(5);state.page=0;state.selected.clear();}
         else switch(action) {
             case 'geos-info':dialog('GEOS info',['GEOS 64   Version 2.0','Graphic Environment','Operating System','Berkeley Softworks 1988']);return;
@@ -540,19 +627,21 @@
             case 'open':if(file){openFile(file);return;}dialog('Open',['Select a file first.']);return;
             case 'new-text':newDocument();return;
             case 'new-picture':newPaint();return;
-            case 'info':if(!file){dialog('File info',['Select a file first.']);return;}dialog('File info',[file.name,file.type,file.size+' Kbytes',file.locked?'write protected':'not write protected',file.parentApplication?'opens with '+file.parentApplication:file.structure]);return;
+            case 'info':if(!file){dialog('File info',['Select a file first.']);return;}if(mountedD64){nativeFileInfo(file);return;}dialog('File info',[file.name,file.type,file.size+' Kbytes',file.locked?'write protected':'not write protected',file.parentApplication?'opens with '+file.parentApplication:file.structure]);return;
             case 'rename':if(!file){dialog('Rename',['Select a file first.']);return;}if(file.locked){dialog('Rename',['This system file is protected.']);return;}rename('Rename file',file.name,name=>{file.name=name;});return;
             case 'duplicate':if(!file){dialog('Duplicate',['Select a file first.']);return;}if(files.reduce((n,f)=>n+f.size,0)+file.size>165){dialog('Duplicate',['Disk full.']);return;}{let id=0;while(files.some(file=>file.id===id))id++;let name,count=1;do{const prefix=count===1?'copy ':'copy '+count+' ';name=prefix+file.name.slice(0,16-prefix.length);count++;}while(files.some(file=>file.name.toUpperCase()===name.toUpperCase()));const copy={...file,id,name,locked:[4,12].includes(file.geosType)};const candidate=diskSnapshot();candidate.files.push(copy);try{decodeDisk(JSON.stringify(candidate));}catch(e){dialog('Duplicate',['Disk full.']);return;}files.push(copy);persistDisk();}break;
             case 'delete':if(!file){dialog('Delete',['Select a file first.']);return;}if(file.locked){dialog('Delete',['This system file is protected.']);return;}dialog('Delete file',[file.name,'Move to the waste basket?'],[['Delete',()=>{state.trash=file;state.selected.clear();state.page=Math.min(state.page,pages()-1);persistDisk();closeModal();}],['Cancel',closeModal]]);return;
             case 'disk-open':state.diskOpen=true;break;
             case 'disk-close':state.diskOpen=false;state.selected.clear();break;
             case 'disk-rename':rename('Rename disk',state.diskName,name=>{state.diskName=name;});return;
-            case 'disk-info':dialog('Disk info',[state.diskName,'Drive A: 1541   Device 8','165 Kbytes total',state.storageIssue||'Saved in this browser.']);return;
+            case 'd64-open':d64Picker.click();return;
+            case 'web-disk':returnWebDisk();break;
+            case 'disk-info':if(mountedD64){dialog('D64 disk info',[state.diskName,mountedD64.isGeos?'GEOS format - read only':'CBM DOS - read only',mountedD64.freeBlocks+' blocks free',mountedD64.warnings.length+' metadata warnings'],[['Details',()=>dialog('D64 details',[],[['Close',closeModal]],'reader',mountedD64.warnings.join('\n')||'No directory metadata warnings. File contents have not been validated.')],['Close',closeModal]]);return;}dialog('Disk info',[state.diskName,'Drive A: 1541   Device 8','165 Kbytes total',state.storageIssue||'Saved in this browser.']);return;
             case 'disk-export':exportDisk();break;
             case 'trash-empty':emptyWasteBasket();return;
             case 'disk-import':diskPicker.click();break;
             case 'disk-previous':try{const backup=localStorage.getItem(BACKUP_KEY);if(backup===null)dialog('Previous disk',['No previous copy is available.']);else previewImport(backup);}catch(e){dialog('Previous disk',['Browser storage is unavailable.']);}return;
-            case 'validate':dialog('Validate',['Disk validated.','No errors found.']);return;
+            case 'validate':if(mountedD64){dialog('D64 directory',['Directory has been read.',mountedD64.warnings.length+' metadata warnings.','File contents were not validated.']);return;}dialog('Validate',['Disk validated.','No errors found.']);return;
             case 'select-all':if(state.diskOpen)pageFiles().forEach(f=>state.selected.add(f.id));break;
             case 'select-none':state.selected.clear();break;
             case 'page-next':if(state.diskOpen)state.page=Math.min(pages()-1,state.page+1);state.selected.clear();break;
@@ -580,11 +669,16 @@
             if(file.size>1000000){dialog('Import failed',['Disk backup is too large.']);return;}
             try{const raw=await file.text();if(state.phase==='desktop'&&request===importRequest&&!state.launch)previewImport(raw);}catch(e){if(state.phase==='desktop'&&request===importRequest&&!state.launch)dialog('Import failed',['This backup could not be read.','The current disk is unchanged.']);}});
         root.appendChild(diskPicker);
+        d64Picker=element('input');d64Picker.type='file';d64Picker.accept='.d64';d64Picker.hidden=true;root.appendChild(d64Picker);
+        d64Picker.addEventListener('change',async()=>{const file=d64Picker.files?.[0],request=++d64Request;d64Picker.value='';if(!file)return;
+            if(![174848,175531].includes(file.size)){dialog('D64 not opened',['Use a 35-track D64 image.','The current disk is unchanged.']);return;}
+            try{const bytes=await file.arrayBuffer();if(state.phase==='desktop'&&request===d64Request&&!state.launch)previewD64(bytes,file.name);}catch(error){if(state.phase==='desktop'&&request===d64Request&&!state.launch)dialog('D64 not opened',['This image could not be read.','The current disk is unchanged.']);}});
         desktop.append(canvas,controls,status);viewport.append(desktop);monitor.append(viewport);root.append(monitor);document.body.append(root);
         desktop.addEventListener('click',e=>{if(e.target===canvas||e.target===controls){state.menu=null;deselect();}});
         window.addEventListener('resize',fit);
     }
     function leave() {
+        returnWebDisk(false);d64Request++;
         painting=null;if(paintSurface){paintSurface.remove();paintSurface=null;}
         timers.forEach(clearTimeout);timers=[];clearInterval(clockTimer);importRequest++;state.phase='off';state.menu=null;state.modal=null;state.launch=null;state.documentEdit=null;lastFileClick=null;
         if(root)root.hidden=true;if(editor){editor.remove();editor=null;}
