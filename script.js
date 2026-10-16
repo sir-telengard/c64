@@ -125,7 +125,7 @@
     }
     function decodeGeoWriteText(data,label){
         let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0,rulerWarnings=0,tabCount=0,paragraph=null;
-        let ruler={left:0,right:480,first:0,align:'left',tabs:[]};const runs=[],paragraphs=[];
+        let ruler={left:0,right:480,first:0,align:'left',tabs:[],lineSpacing:1};const runs=[],paragraphs=[];
         function ensureParagraph(){if(!paragraph){paragraph={ruler,runs:[],ended:false};paragraphs.push(paragraph);}return paragraph;}
         function append(value){
             text+=value;const p=ensureParagraph(),last=p.runs[p.runs.length-1];
@@ -141,8 +141,8 @@
                 const tabs=[];let previous=0,badTabs=false;
                 for(let slot=0;slot<8;slot++){const code=word(5+slot*2),position=code&32767;if(!position)continue;if(position>640||position<previous){badTabs=true;continue;}previous=position;if(!tabs.some(t=>t.position===position))tabs.push({position,decimal:!!(code&32768)});}
                 if(badTabs)rulerWarnings++;
-                if(left>=right||right>640||first>=right){rulerWarnings++;ruler={left:0,right:480,first:0,align:'left',tabs:[]};}
-                else ruler={left,right,first,align:['left','center','right','justify'][data[i+23]&3],tabs};
+                if(left>=right||right>640||first>=right){rulerWarnings++;ruler={left:0,right:480,first:0,align:'left',tabs:[],lineSpacing:1};}
+                else {const spacing=(data[i+23]>>2)&3;if(spacing===3)rulerWarnings++;ruler={left,right,first,align:['left','center','right','justify'][data[i+23]&3],tabs,lineSpacing:[1,1.5,2,1][spacing]};}
                 if(paragraph)rulerWarnings++; // Mid-paragraph rulers apply at the next paragraph boundary.
             }
             else if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];}
@@ -576,7 +576,7 @@
                     const documentData=nativeDocument.data;
                     for(const paragraph of documentData.items[nativeDocument.index].paragraphs){
                         const block=element('p','geos-paragraph'),ruler=paragraph.ruler;
-                        Object.assign(block.style,{textAlign:ruler.align,marginLeft:(ruler.left/documentData.pageWidth*100)+'%',marginRight:((documentData.pageWidth-ruler.right)/documentData.pageWidth*100)+'%',textIndent:((ruler.first-ruler.left)/(ruler.right-ruler.left)*100)+'%'});
+                        Object.assign(block.style,{lineHeight:String(ruler.lineSpacing),minHeight:ruler.lineSpacing+'em',fontSize:(paragraph.runs.find(run=>!run.picture)?.pointSize||10)+'px',textAlign:ruler.align,marginLeft:(ruler.left/documentData.pageWidth*100)+'%',marginRight:((documentData.pageWidth-ruler.right)/documentData.pageWidth*100)+'%',textIndent:((ruler.first-ruler.left)/(ruler.right-ruler.left)*100)+'%'});
                         for(const [runIndex,run] of paragraph.runs.entries()){
                         if(run.tab){
                             const node=element('span','geos-tab');node.textContent='\t';node.style.fontSize=run.pointSize+'px';
@@ -616,7 +616,7 @@
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Ruler tabs support regular and decimal (period) alignment. After the last usable stop, a four-space fallback keeps text readable. Wrapped or non-left-aligned tabbed lines remain approximations. Original page layout, line spacing, reverse, outline, superscript and subscript are omitted. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Ruler tabs support regular and decimal (period) alignment. Paragraphs use single, 1½ or double line spacing; reserved spacing codes fall back to single with a warning. After the last usable stop, a four-space fallback keeps text readable. Wrapped or non-left-aligned tabbed lines remain approximations. Original print pagination, reverse, outline, superscript and subscript are omitted. Browser line metrics and wrapping may differ from GEOS. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);

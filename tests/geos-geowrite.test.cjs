@@ -46,7 +46,7 @@ test('unsupported versions and non-documents continue to show native-file inform
 });
 test('viewer is read-only, navigates pages, returns from Details and exports all sections',async()=>{
     const e=desktop(),saved=e.storage.get('c64-geos-disk');mount(e);open(e);assert.equal(e.api.state.modal.kind,'geowrite');assert.equal(e.api.editor.attributes.role,'document');assert.notEqual(e.api.editor.contentEditable,'true');assert.equal(e.api.controls.children.find(n=>n.dataset.key==='geowrite-prev').disabled,true);
-    click(e,'geowrite-next');assert.match(e.api.editor.textContent,/Second page/);click(e,'geowrite-details');assert.match(e.api.editor.value,/page layout/);e.key('Escape');assert.equal(e.api.state.modal.kind,'geowrite');assert.equal(e.api.nativeDocument.index,1);
+    click(e,'geowrite-next');assert.match(e.api.editor.textContent,/Second page/);click(e,'geowrite-details');assert.match(e.api.editor.value,/print pagination/);e.key('Escape');assert.equal(e.api.state.modal.kind,'geowrite');assert.equal(e.api.nativeDocument.index,1);
     click(e,'geowrite-export');const output=await e.downloads.at(-1).text();assert.match(output,/--- Page 1 ---/);assert.match(output,/--- Header ---\nSample header/);assert.equal(e.storage.get('c64-geos-disk'),saved);assert.equal(e.unload().prevented,false);
     e.key('Escape');assert.equal(e.api.nativeDocument,null);assert.equal(e.document.activeElement.dataset.key,'file-0');e.api.act('web-disk');assert.equal(e.storage.get('c64-geos-disk'),saved);
 });

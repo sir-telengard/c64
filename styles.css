@@ -138,5 +138,5 @@ body.geos-active > .screen { display: none; }
 .geos-paint-surface:focus-visible { outline: 1px dashed #111; outline-offset: 1px; }
 .geos-rich-document { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; font: 10px/1.3 Arial, sans-serif; cursor: text; user-select: text; }
 .geos-rich-document .geos-inline-picture { position: static; inset: auto; display: block; width: auto; height: auto; max-width: 100%; margin: 4px 0; image-rendering: pixelated; }
-.geos-paragraph { margin-top: 0; margin-bottom: 0; min-height: 1.3em; }
+.geos-paragraph { margin-top: 0; margin-bottom: 0; min-height: 1em; }
 .geos-tab { display: inline-block; overflow: hidden; white-space: pre; vertical-align: baseline; color: transparent; }
