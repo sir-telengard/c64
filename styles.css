@@ -140,3 +140,9 @@ body.geos-active > .screen { display: none; }
 .geos-rich-document .geos-inline-picture { position: static; inset: auto; display: block; width: auto; height: auto; max-width: 100%; margin: 4px 0; image-rendering: pixelated; }
 .geos-paragraph { margin-top: 0; margin-bottom: 0; min-height: 1em; }
 .geos-tab { display: inline-block; overflow: hidden; white-space: pre; vertical-align: baseline; color: transparent; }
+
+/* Keep solid, readable glyphs when text strokes are unavailable. */
+@supports (-webkit-text-stroke: 1px black) {
+    .geos-rich-document .geos-outline { -webkit-text-stroke: 0.08em currentColor; -webkit-text-fill-color: var(--geos-outline-fill); }
+    .geos-rich-document .geos-outline::selection { -webkit-text-stroke: 0; -webkit-text-fill-color: HighlightText; }
+}
