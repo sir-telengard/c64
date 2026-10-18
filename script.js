@@ -33,10 +33,12 @@
     let painting=null, paintSurface=null;
     let mountedD64=null, d64Picker=null, d64Request=0, nativeDocument=null;
     let fontPicker=null,fontRequest=0,fontSerial=0;const loadedFonts=new Map();
+    function geoWriteScript(style){return (style&6)===4?4:(style&6)===2?2:0;}
     function geoWriteTextWidth(value,run){
+        const scale=geoWriteScript(run.style)?0.75:1;
         const face=loadedFonts.get(run.fontId+'/'+run.pointSize);
-        if(face&&[...value].every(c=>c.charCodeAt(0)>=32&&c.charCodeAt(0)<=126))return [...value].reduce((sum,c)=>{const i=c.charCodeAt(0)-32;return sum+face.font.positions[i+1]-face.font.positions[i];},0);
-        ctx.font=(run.style&16?'italic ':'')+(run.style&64?'bold ':'')+run.pointSize+'px Arial';return ctx.measureText(value).width;
+        if(face&&[...value].every(c=>c.charCodeAt(0)>=32&&c.charCodeAt(0)<=126))return [...value].reduce((sum,c)=>{const i=c.charCodeAt(0)-32;return sum+face.font.positions[i+1]-face.font.positions[i];},0)*scale;
+        ctx.font=(run.style&16?'italic ':'')+(run.style&64?'bold ':'')+run.pointSize+'px Arial';return ctx.measureText(value).width*scale;
     }
     function geoWriteTabWidth(x,width,ruler,prefixWidth,defaultWidth){
         const scale=width/(ruler.right-ruler.left),stop=ruler.tabs.find(t=>(t.position-ruler.left)*scale>x+.01&&t.position<ruler.right);
@@ -124,7 +126,7 @@
         return {width,height,rowBytes,bitmap};
     }
     function decodeGeoWriteText(data,label){
-        let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0,rulerWarnings=0,tabCount=0,paragraph=null;
+        let text='',unsupported=0,images=0,fontId=0,pointSize=10,style=0,rulerWarnings=0,scriptWarnings=0,tabCount=0,paragraph=null;
         let ruler={left:0,right:480,first:0,align:'left',tabs:[],lineSpacing:1};const runs=[],paragraphs=[];
         function ensureParagraph(){if(!paragraph){paragraph={ruler,runs:[],ended:false};paragraphs.push(paragraph);}return paragraph;}
         function append(value){
@@ -145,14 +147,14 @@
                 else {const spacing=(data[i+23]>>2)&3;if(spacing===3)rulerWarnings++;ruler={left,right,first,align:['left','center','right','justify'][data[i+23]&3],tabs,lineSpacing:[1,1.5,2,1][spacing]};}
                 if(paragraph)rulerWarnings++; // Mid-paragraph rulers apply at the next paragraph boundary.
             }
-            else if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];}
+            else if(code===23){const font=data[i+1]+256*data[i+2];fontId=font>>6;pointSize=(font&63)||10;style=data[i+3];if((style&6)===6)scriptWarnings++;}
             else if(code===16){const value='\n[Picture omitted]\n',run={text:value,fontId,pointSize,style,picture:{width:data[i+1]*8,height:data[i+2]+256*data[i+3],record:data[i+4]}};text+=value;runs.push(run);ensureParagraph().runs.push(run);images++;}
             else if(code===9){if(++tabCount>512)append('\t');else{const run={text:'\t',fontId,pointSize,style,tab:true};text+='\t';runs.push(run);ensureParagraph().runs.push(run);}}else if(code===13){append('\n');paragraph.ended=true;paragraph=null;}else if(code===12)append('\n[Page break]\n');
             else if(code>=32&&code<=126)append(String.fromCharCode(code));
             else if(length===1){append('\uFFFD');unsupported++;}
             i+=length;
         }
-        return {text,runs,paragraphs,rulerWarnings,tabOverflow:tabCount>512,unsupported,images};
+        return {text,runs,paragraphs,rulerWarnings,scriptWarnings,tabOverflow:tabCount>512,unsupported,images};
     }
     function isGeoWrite(file){return file.geosType===7&&file.structure==='VLIR'&&/^Write Image V2\.[01]$/i.test((file.className||'').replace(/\s+/g,' ').trim());}
     function parseD64(input) {
@@ -231,6 +233,7 @@
                 if(record<61&&pageGap)notes.push(label+': earlier page record is missing.');
                 const decoded=decodeGeoWriteText(readRecord(track,number,label),label);
                 if(decoded.unsupported)notes.push(label+': '+decoded.unsupported+' unsupported character codes.');
+                if(decoded.scriptWarnings)notes.push(label+': '+decoded.scriptWarnings+' conflicting superscript/subscript styles; shown on the normal baseline.');
                 if(decoded.rulerWarnings)notes.push(label+': '+decoded.rulerWarnings+' invalid or misplaced rulers; paragraph layout approximated.');
                 if(decoded.tabOverflow)notes.push(label+': tabs after the first 512 use browser spacing.');
                 items.push({label,text:decoded.text,runs:decoded.runs,paragraphs:decoded.paragraphs,record});
@@ -579,7 +582,7 @@
                         Object.assign(block.style,{lineHeight:String(ruler.lineSpacing),minHeight:ruler.lineSpacing+'em',fontSize:(paragraph.runs.find(run=>!run.picture)?.pointSize||10)+'px',textAlign:ruler.align,marginLeft:(ruler.left/documentData.pageWidth*100)+'%',marginRight:((documentData.pageWidth-ruler.right)/documentData.pageWidth*100)+'%',textIndent:((ruler.first-ruler.left)/(ruler.right-ruler.left)*100)+'%'});
                         for(const [runIndex,run] of paragraph.runs.entries()){
                         if(run.tab){
-                            const node=element('span','geos-tab');node.textContent='\t';node.style.fontSize=run.pointSize+'px';
+                            const node=element('span','geos-tab');node.textContent='\t';node.style.fontSize=(run.pointSize*(geoWriteScript(run.style)?0.75:1))+'px';
                             const prefix=[];for(let following=runIndex+1;following<paragraph.runs.length;following++){
                                 const next=paragraph.runs[following];
                                 if(next.tab||next.picture)break;const end=next.text.search(/[.\t\n]/),value=end<0?next.text:next.text.slice(0,end);if(value)prefix.push({text:value,run:next});if(end>=0)break;
@@ -595,8 +598,9 @@
                             }
                             bitmapContext.putImageData(pixels,0,0);block.appendChild(image);continue;
                         }
-                        const span=element('span');span.textContent=paragraph.ended&&run===paragraph.runs[paragraph.runs.length-1]?run.text.replace(/\n$/,''):run.text;
-                        Object.assign(span.style,{fontSize:run.pointSize+'px',fontWeight:run.style&64?'bold':'normal',fontStyle:run.style&16?'italic':'normal',textDecoration:run.style&128?'underline':'none'});
+                        const script=geoWriteScript(run.style),span=element('span');span.textContent=paragraph.ended&&run===paragraph.runs[paragraph.runs.length-1]?run.text.replace(/\n$/,''):run.text;
+                        Object.assign(span.style,{fontSize:(run.pointSize*(script?0.75:1))+'px',fontWeight:run.style&64?'bold':'normal',fontStyle:run.style&16?'italic':'normal',textDecoration:run.style&128?'underline':'none'});
+                        if(script)Object.assign(span.style,{position:'relative',top:script===4?'-0.35em':'0.2em',lineHeight:'0'});
                         const original=loadedFonts.get(run.fontId+'/'+run.pointSize);if(original)span.style.fontFamily=original.family+', Arial, sans-serif';
                         block.appendChild(span);
                         }
@@ -616,7 +620,7 @@
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Ruler tabs support regular and decimal (period) alignment. Paragraphs use single, 1½ or double line spacing; reserved spacing codes fall back to single with a warning. After the last usable stop, a four-space fallback keeps text readable. Wrapped or non-left-aligned tabbed lines remain approximations. Original print pagination, reverse, outline, superscript and subscript are omitted. Browser line metrics and wrapping may differ from GEOS. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Ruler tabs support regular and decimal (period) alignment. Paragraphs use single, 1½ or double line spacing; reserved spacing codes fall back to single with a warning. After the last usable stop, a four-space fallback keeps text readable. Wrapped or non-left-aligned tabbed lines remain approximations. Superscript and subscript use smaller, raised or lowered text. Conflicting script flags use the normal baseline with a warning. Script sizing and offsets approximate GEOS. Original print pagination, reverse and outline are omitted. Browser line metrics and wrapping may differ from GEOS. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);
