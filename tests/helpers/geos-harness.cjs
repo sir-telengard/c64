@@ -75,7 +75,7 @@ function desktop(options = {}) {
     const source = fs.readFileSync(require.resolve('../../script.js'), 'utf8');
     const end = source.indexOf('\n})();');
     assert.ok(end > 0, 'GEOS closure found');
-    const geos = source.slice(0, end) + '\n globalThis.geosTest = {files,state,act,openFile,closeModal,launchById,applications,selectFile,diskSnapshot,decodeDisk,persistDisk,previewImport,exportDisk,parseD64,previewD64,decodeGeoWriteText,decodePhotoScrap,decodeGeosFont,geosTrueType,geoWriteTabWidth,geoWriteTextWidth,layoutGeoWriteTabs,loadFontImage,loadedFonts,get fontPicker(){return fontPicker},get nativeDocument(){return nativeDocument},get mountedD64(){return mountedD64},get d64Picker(){return d64Picker},get painting(){return painting},get paintSurface(){return paintSurface},get picker(){return diskPicker},get editor(){return editor},get controls(){return controls}};\n})();';
+    const geos = source.slice(0, end) + '\n globalThis.geosTest = {files,state,act,openFile,closeModal,launchById,applications,selectFile,diskSnapshot,decodeDisk,persistDisk,previewImport,exportDisk,parseD64,previewD64,decodeGeoWriteText,decodePhotoScrap,decodeGeosFont,geosTrueType,geoWriteTabWidth,geoWriteTextWidth,layoutGeoWriteTabs,layoutGeoWritePage,loadFontImage,loadedFonts,get fontPicker(){return fontPicker},get nativeDocument(){return nativeDocument},get mountedD64(){return mountedD64},get d64Picker(){return d64Picker},get painting(){return painting},get paintSurface(){return paintSurface},get picker(){return diskPicker},get editor(){return editor},get controls(){return controls}};\n})();';
     vm.runInNewContext(geos, sandbox);
     sandbox.GEOS.boot({ output: text => output.push(text), onExit() {} });
     if (!options.manualBoot) advance(4000);

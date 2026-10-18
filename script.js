@@ -42,6 +42,15 @@
         if(footer)sections.push({kind:'footer',item:footer});
         return sections;
     }
+    function layoutGeoWritePage(editor,pageHeight){
+        const spacer=editor.geosPageSpacer;if(!spacer)return;
+        spacer.style.height='0px';
+        const children=Array.from(editor.children),first=children[0],last=children[children.length-1];
+        const editorRect=editor.getBoundingClientRect(),scale=editor.offsetWidth?editorRect.width/editor.offsetWidth:1;
+        const top=first.getBoundingClientRect(),bottom=last.getBoundingClientRect();
+        const used=(bottom.top+bottom.height-top.top)/(scale||1);
+        spacer.style.height=Math.max(0,pageHeight-used)+'px';
+    }
     function geoWriteScript(style){return (style&6)===4?4:(style&6)===2?2:0;}
     function geoWriteTextWidth(value,run){
         const scale=geoWriteScript(run.style)?0.75:1;
@@ -223,6 +232,8 @@
             }
             const header=checkedSector(file.infoTrack,file.infoSector),index=checkedSector(file.startTrack,file.startSector),claimed=new Set(['18/0',file.startTrack+'/'+file.startSector,file.infoTrack+'/'+file.infoSector,...seen]),items=[],notes=[];
             if(index[0]!==0||index[1]!==255)throw new Error('Invalid VLIR index sector.');
+            const storedPageHeight=header[144]+256*header[145],pageHeight=storedPageHeight>0&&storedPageHeight<=4096?storedPageHeight:752;
+            if(pageHeight!==storedPageHeight)notes.push('Missing or unsupported page height; using 752 dots.');
             const startPage=header[137]+256*header[138];let pageGap=false,vlirEnd=127;
             for(let record=0;record<127;record++)if(index[2+record*2]===0&&index[3+record*2]===0){vlirEnd=record;break;}
             function readRecord(track,number,label){
@@ -265,7 +276,7 @@
                 }catch(error){run.pictureError=error.message;notes.push(item.label+', picture '+ref.record+': '+error.message);}
             }
             const pageWidth=items.some(item=>item.paragraphs.some(p=>p.ruler.right>480))?640:480;
-            return {items,pageWidth,hasTitlePage:!!(header[139]&128),warnings:notes};
+            return {items,pageWidth,pageHeight,storedPageHeight,hasTitlePage:!!(header[139]&128),warnings:notes};
         }
         function readFonts(){
             const fonts=[],notes=[];
@@ -586,8 +597,10 @@
                 if(m.kind==='geowrite'){
                     editor.tabIndex=0;editor.setAttribute('role','document');editor.geosTabs=[];
                     const documentData=nativeDocument.data;
+                    if(documentData.items[nativeDocument.index].record<61){editor.geosPageSpacer=element('div','geos-page-spacer');editor.geosPageSpacer.setAttribute('aria-hidden','true');}
                     for(const section of geoWriteViewSections(documentData,nativeDocument.index)){
                     let container=editor;
+                    if(section.kind==='footer'&&editor.geosPageSpacer)editor.appendChild(editor.geosPageSpacer);
                     if(section.kind!=='main'){
                         container=element('section','geos-page-'+section.kind);container.setAttribute('role','region');container.setAttribute('aria-label',section.item.label);editor.appendChild(container);
                     }
@@ -622,11 +635,12 @@
                         container.appendChild(block);
                     }
                     }
+                    if(editor.geosPageSpacer&&!editor.geosPageSpacer.parentNode)editor.appendChild(editor.geosPageSpacer);
                 }else {editor.readOnly=m.kind==='reader';editor.value=m.kind==='reader'?m.value:m.kind==='document'?state.documentEdit.text:state.note;}
                 if(m.kind==='document'){editor.maxLength=200000;editor.addEventListener('input',()=>{state.documentEdit.text=editor.value;state.documentEdit.message='';state.modal.title=documentTitle();render();});}
                 if(m.kind==='note'){editor.maxLength=2000;editor.addEventListener('input',()=>{state.note=editor.value;const file=files.find(file=>file.id===state.launch?.fileId);if(file)file.content=state.note;persistDisk();render();});}desktop.appendChild(editor);}
             Object.assign(editor.style,{left:(x+8)+'px',top:(y+22)+'px',width:(w-16)+'px',height:'108px'});
-            if(m.kind==='geowrite')layoutGeoWriteTabs(editor.geosTabs);
+            if(m.kind==='geowrite'){layoutGeoWriteTabs(editor.geosTabs);layoutGeoWritePage(editor,nativeDocument.data.pageHeight);}
             if(m.kind==='note')smallText(state.storageIssue?'session only - export disk':'saved to disk',x+8,y+134);
             if(m.kind==='document')smallText(state.documentEdit.message||(documentDirty()?'unsaved changes':state.documentEdit.fileId===null?'not saved yet':'saved to disk'),x+8,y+134);
             if(m.kind==='geowrite'){
@@ -636,7 +650,7 @@
                 modalControl('geowrite-prev','Prev',x+8,y+h-21,38,()=>showNativeDocument(Math.max(0,d.index-1)));controls.lastElementChild.disabled=d.index===0;
                 modalControl('geowrite-next','Next',x+50,y+h-21,38,()=>showNativeDocument(Math.min(d.data.items.length-1,d.index+1)));controls.lastElementChild.disabled=d.index===d.data.items.length-1;
                 modalControl('geowrite-export','Export',x+92,y+h-21,45,exportNativeDocument);
-                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Ruler tabs support regular and decimal (period) alignment. Paragraphs use single, 1½ or double line spacing; reserved spacing codes fall back to single with a warning. After the last usable stop, a four-space fallback keeps text readable. Wrapped or non-left-aligned tabbed lines remain approximations. Superscript and subscript use smaller, raised or lowered text. Conflicting script flags use the normal baseline with a warning. Script sizing and offsets approximate GEOS. Reverse text uses light letters on a dark background. Outline text uses hollow browser glyphs, with reversed outlines on dark backgrounds. All text styles approximate GEOS rasterization. Headers and footers appear above and below each page, except the first page when the title-page flag is set. Header and Footer entries remain available separately. Exact print pagination and page heights are omitted. Browser line metrics and wrapping may differ from GEOS. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
+                modalControl('geowrite-details','Details',x+141,y+h-21,49,()=>dialog('geoWrite details',[],[['Close',()=>showNativeDocument(d.index)]],'reader','Read-only preview with basic text styles, paragraph alignment, margins, first-line/hanging indents and monochrome pictures. Original bitmap shapes and advances are used for loaded ID/size matches; missing fonts use the browser fallback. Close this document and choose disk > load fonts to read a font D64 locally. Fonts remain available while switching disks, until page refresh. Bold/italic are synthesized by the browser; rasterization may differ from GEOS. Paragraph positions scale to the viewer width. Ruler tabs support regular and decimal (period) alignment. Paragraphs use single, 1½ or double line spacing; reserved spacing codes fall back to single with a warning. After the last usable stop, a four-space fallback keeps text readable. Wrapped or non-left-aligned tabbed lines remain approximations. Superscript and subscript use smaller, raised or lowered text. Conflicting script flags use the normal baseline with a warning. Script sizing and offsets approximate GEOS. Reverse text uses light letters on a dark background. Outline text uses hollow browser glyphs, with reversed outlines on dark backgrounds. All text styles approximate GEOS rasterization. Headers and footers appear above and below each page, except the first page when the title-page flag is set. Header and Footer entries remain available separately. Stored page height sets a minimum page length in screen pixels, leaving blank space before the footer. Missing or unsupported heights use 752 dots. Overflowing text extends the page without clipping. Exact print pagination, cached section heights and printer metrics remain approximate. Browser line metrics and wrapping may differ from GEOS. Font points map to pixels before desktop scaling; zero-size codes use 10 pixels. Pictures shrink to fit; color is ignored. Export is plain text.\n\n'+[...new Map(d.data.items.flatMap(i=>i.runs).filter(r=>!r.picture).map(r=>[r.fontId+'/'+r.pointSize,r])).values()].map(r=>{const f=loadedFonts.get(r.fontId+'/'+r.pointSize);return 'ID '+r.fontId+', '+r.pointSize+' pt: '+(f?f.font.name:'browser fallback');}).join('\n')+'\n\n'+(d.data.warnings.join('\n')||'No decoding warnings.')));
                 modalControl('modal-close','Close',x+194,y+h-21,38,closeModal);
             } else if(m.kind==='document'){
                 modalControl('document-new','New',x+8,y+h-21,40,newDocument);

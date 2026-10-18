@@ -149,3 +149,5 @@ body.geos-active > .screen { display: none; }
 
 .geos-page-header { border-bottom: 1px dotted #111; padding-bottom: 4px; margin-bottom: 6px; }
 .geos-page-footer { border-top: 1px dotted #111; padding-top: 4px; margin-top: 6px; }
+
+.geos-page-spacer { height: 0; margin: 0; padding: 0; border: 0; }

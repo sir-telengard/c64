@@ -14,7 +14,7 @@ test('document title flag is independent of NLQ and other flags in both supporte
 });
 
 test('normal pages repeat header/body/footer in source order with separately accessible sections',()=>{
-    const e=desktop();open(e,{startPage:12});assert.deepEqual(e.api.editor.children.map(n=>n.tagName),['section','p','p','section']);assert.deepEqual(regions(e).map(n=>n.attributes['aria-label']),['Header','Footer']);assert.match(e.api.editor.children[0].textContent,/Sample header/);assert.match(e.api.editor.children.at(-1).textContent,/Sample footer/);assert.ok(e.api.editor.textContent.indexOf('Sample header')<e.api.editor.textContent.indexOf('First page'));
+    const e=desktop();open(e,{startPage:12});assert.deepEqual(e.api.editor.children.map(n=>n.tagName),['section','p','p','div','section']);assert.deepEqual(regions(e).map(n=>n.attributes['aria-label']),['Header','Footer']);assert.match(e.api.editor.children[0].textContent,/Sample header/);assert.match(e.api.editor.children.at(-1).textContent,/Sample footer/);assert.ok(e.api.editor.textContent.indexOf('Sample header')<e.api.editor.textContent.indexOf('First page'));
     click(e,'geowrite-next');assert.equal(regions(e).length,2);assert.match(e.api.editor.textContent,/Second page/);click(e,'geowrite-next');assert.equal(regions(e).length,0);assert.equal(e.api.editor.textContent,'Sample header');click(e,'geowrite-next');assert.equal(e.api.editor.textContent,'Sample footer');assert.equal(e.api.controls.children.find(n=>n.dataset.key==='geowrite-next').disabled,true);
 });
 
