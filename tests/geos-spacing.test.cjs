@@ -2,6 +2,7 @@ const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const {desktop}=require('./helpers/geos-harness.cjs');
 const {fixture,page,ruler}=require('./helpers/geowrite-fixture.cjs');
+const firstParagraph=e=>e.api.editor.children.find(n=>n.tagName==='p');
 const text=value=>Buffer.from(value,'ascii');
 function click(e,key){const button=e.api.controls.children.find(n=>n.dataset.key===key);assert.ok(button,key);button.click();}
 function open(e,records){const f=fixture({records});e.api.previewD64(f.bytes);click(e,'modal-0');e.api.openFile(e.api.files[0]);return f;}
@@ -31,5 +32,5 @@ test('rendered spacing scales with mixed font sizes and gives blank paragraphs h
 
 test('spacing resets across sections and navigation preserves source text, storage and disk bytes',async()=>{
     const e=desktop(),saved=e.storage.get('c64-geos-disk'),f=open(e,new Map([[0,page(Buffer.concat([ruler({spacing:2}),text('double\r\rbody')]))],[1,Buffer.concat([text('default page'),Buffer.from([0])])],[61,Buffer.concat([text('default header'),Buffer.from([0])])]])),before=Buffer.from(f.bytes);
-    assert.equal(e.api.editor.children[0].style.lineHeight,'2');click(e,'geowrite-next');assert.equal(e.api.editor.children[0].style.lineHeight,'1');click(e,'geowrite-next');assert.equal(e.api.editor.children[0].style.lineHeight,'1');click(e,'geowrite-prev');click(e,'geowrite-prev');assert.equal(e.api.editor.children[0].style.lineHeight,'2');click(e,'geowrite-export');assert.match(await e.downloads.at(-1).text(),/double\n\nbody/);assert.equal(e.storage.get('c64-geos-disk'),saved);assert.deepEqual(f.bytes,before);
+    assert.equal(firstParagraph(e).style.lineHeight,'2');click(e,'geowrite-next');assert.equal(firstParagraph(e).style.lineHeight,'1');click(e,'geowrite-next');assert.equal(firstParagraph(e).style.lineHeight,'1');click(e,'geowrite-prev');click(e,'geowrite-prev');assert.equal(firstParagraph(e).style.lineHeight,'2');click(e,'geowrite-export');assert.match(await e.downloads.at(-1).text(),/double\n\nbody/);assert.equal(e.storage.get('c64-geos-disk'),saved);assert.deepEqual(f.bytes,before);
 });
