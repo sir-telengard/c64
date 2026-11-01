@@ -237,3 +237,24 @@ body.geos-active > .screen { display: none; }
         gap: 8px;
     }
 }
+
+/* GEOS shares the mobile monitor proportions; desktop GEOS is unchanged. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 600px) {
+    body.geos-active { background: #7C71DB !important; }
+    .geos-shell {
+        background: #7C71DB;
+        padding: 12px;
+        place-items: start center;
+        overflow: hidden;
+        overscroll-behavior: none;
+    }
+    .geos-monitor {
+        width: var(--geos-mobile-width);
+        height: calc(var(--geos-mobile-width) * 0.75);
+        padding: 0;
+        border: calc(var(--geos-mobile-width) * 0.05) solid #7C71DB;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+    }
+}

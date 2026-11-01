@@ -970,7 +970,19 @@
         }
         render();
     }
-    function fit() {if(!root)return;const scale=Math.max(.5,Math.min(4,Math.floor(Math.min((innerWidth-24)/344,(innerHeight-24)/224)*4)/4));root.style.setProperty('--geos-scale',scale);}
+    function fit() {
+        if (!root) return;
+        if (window.matchMedia('(max-width: 767px), (pointer: coarse) and (max-height: 600px)').matches) {
+            const viewport = window.visualViewport;
+            const width = Math.max(1, Math.min((viewport?.width || innerWidth) - 24,
+                ((viewport?.height || innerHeight) - 24) * 4 / 3));
+            root.style.setProperty('--geos-mobile-width', width + 'px');
+            root.style.setProperty('--geos-scale', width * 0.9 / 320);
+            return;
+        }
+        const scale=Math.max(.5,Math.min(4,Math.floor(Math.min((innerWidth-24)/344,(innerHeight-24)/224)*4)/4));
+        root.style.setProperty('--geos-scale',scale);
+    }
     function setup() {
         if(root)return;
         root=element('section','geos-shell');root.hidden=true;root.setAttribute('aria-label','GEOS 2.0 desktop');
@@ -994,6 +1006,7 @@
         desktop.append(canvas,controls,status);viewport.append(desktop);monitor.append(viewport);root.append(monitor);document.body.append(root);
         desktop.addEventListener('click',e=>{if(e.target===canvas||e.target===controls){state.menu=null;deselect();}});
         window.addEventListener('resize',fit);
+        window.visualViewport?.addEventListener('resize',fit);
     }
     function leave() {
         fontRequest++;
