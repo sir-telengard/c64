@@ -212,3 +212,18 @@ body.geos-active > .screen { display: none; }
     body.geos-active > .mobile-controls,
     body.geos-active > .mobile-hint { display: none; }
 }
+
+/* Landscape phones place keys beside the monitor to preserve screen height. */
+@media (orientation: landscape) and (max-width: 767px),
+       (orientation: landscape) and (pointer: coarse) and (max-height: 600px) {
+    body:not(.geos-active) {
+        flex-direction: row;
+        justify-content: center;
+        align-items: flex-start;
+    }
+    .mobile-controls {
+        width: 104px;
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+}

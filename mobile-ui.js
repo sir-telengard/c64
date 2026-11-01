@@ -14,9 +14,13 @@
     const fit = () => {
         if (!monitor) return;
         const viewport = window.visualViewport;
+        const viewportWidth = viewport?.width || window.innerWidth;
+        const viewportHeight = viewport?.height || window.innerHeight;
+        // Use layout orientation so opening the keyboard does not move controls.
+        const landscape = window.matchMedia('(orientation: landscape)').matches;
         const width = Math.max(1, Math.min(
-            (viewport?.width || window.innerWidth) - 24,
-            Math.max(120, (viewport?.height || window.innerHeight) - 132) * 4 / 3
+            viewportWidth - (landscape ? 140 : 24),
+            Math.max(1, viewportHeight - (landscape ? 24 : 92)) * 4 / 3
         ));
         monitor.style.width = width + 'px';
         monitor.style.height = width * 3 / 4 + 'px';
