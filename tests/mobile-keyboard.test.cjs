@@ -17,7 +17,7 @@ function setup() {
         dispatchEvent(event) { keys.push(event.key); }
     };
     const source = fs.readFileSync(require.resolve('../script.js'), 'utf8');
-    vm.runInNewContext(source.slice(source.indexOf('// A real editable control')), {
+    vm.runInNewContext(source.slice(source.indexOf('// A real editable control')).split('// Mobile presentation only.')[0], {
         document, window, KeyboardEvent: function (_, options) { Object.assign(this, options); }
     });
     const fire = (name, values = {}) => {
