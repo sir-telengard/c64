@@ -1524,7 +1524,7 @@ class BasicInterpreter {
         // Cap scrollback so infinite loops don't grow the DOM forever
         const lines = cursorLine.parentNode.querySelectorAll('.ready-line, .easter-egg');
         if (lines.length > 4000) lines[0].remove();
-        cursorLine.scrollIntoView({ block: 'end' });
+        scrollC64PromptIntoView();
     }
 }
 
@@ -1569,7 +1569,7 @@ function startMaze() {
             lineDiv.className = 'ready-line';
             cursorLine.parentNode.insertBefore(lineDiv, cursorLine);
         }
-        cursorLine.scrollIntoView({ block: 'end' });
+        scrollC64PromptIntoView();
     }, 15);
 }
 
@@ -1583,7 +1583,7 @@ function printDirectory() {
 function clearScreen() {
     document.querySelector('.boot-text').style.display = 'none';
     cursorLine.parentNode.querySelectorAll('.ready-line, .easter-egg').forEach(line => line.remove());
-    cursorLine.scrollIntoView({ block: 'end' });
+    scrollC64PromptIntoView();
 }
 
 // Update cursor color function
@@ -1890,7 +1890,7 @@ function addReadyPrompt() {
     readySpan.textContent = "READY.";
     readyLine.appendChild(readySpan);
     cursorLine.parentNode.insertBefore(readyLine, cursorLine);
-    cursorLine.scrollIntoView({ block: 'end' });
+    scrollC64PromptIntoView();
 }
 
 resetIdleTimer();
@@ -2032,3 +2032,13 @@ resetIdleTimer();
     window.visualViewport?.addEventListener('resize', fit);
     update();
 })();
+
+// Scroll terminal output without asking the browser to move the mobile page.
+function scrollC64PromptIntoView() {
+    const screen = cursorLine.closest('.screen');
+    if (screen?.parentElement?.classList.contains('mobile-monitor')) {
+        screen.scrollTop = screen.scrollHeight;
+    } else {
+        cursorLine.scrollIntoView({ block: 'end' });
+    }
+}

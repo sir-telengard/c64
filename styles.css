@@ -154,15 +154,22 @@ body.geos-active > .screen { display: none; }
 
 /* Fixed 4:3 monitor and touch controls; desktop retains its original layout. */
 @media (max-width: 767px), (pointer: coarse) and (max-height: 600px) {
+    html { overflow: hidden; overscroll-behavior: none; }
     body:not(.geos-active) {
-        height: auto;
-        min-height: 100svh;
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        overscroll-behavior: none;
+        height: 100%;
+        min-height: 0;
         width: 100%;
         flex-direction: column;
         justify-content: flex-start;
         padding: 12px 12px max(12px, env(safe-area-inset-bottom));
         gap: 12px;
     }
+    /* Keep the editable target inside the visible viewport when the keyboard opens. */
+    textarea[aria-label="C64 command input"] { top: 12px !important; bottom: auto !important; }
     .mobile-monitor { position: relative; flex: none; overflow: hidden; }
     .mobile-monitor > .screen {
         position: absolute;
