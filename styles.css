@@ -238,11 +238,11 @@ body.geos-active > .screen { display: none; }
     }
 }
 
-/* GEOS shares the mobile monitor proportions; desktop GEOS is unchanged. */
+/* Mobile GEOS keeps its gray monitor and dark surround. */
 @media (max-width: 767px), (pointer: coarse) and (max-height: 600px) {
-    body.geos-active { background: #7C71DB !important; }
+    body.geos-active { background: #202020 !important; }
     .geos-shell {
-        background: #7C71DB;
+        background: #202020;
         padding: 12px;
         place-items: start center;
         overflow: hidden;
@@ -252,7 +252,7 @@ body.geos-active > .screen { display: none; }
         width: var(--geos-mobile-width);
         height: calc(var(--geos-mobile-width) * 0.75);
         padding: 0;
-        border: calc(var(--geos-mobile-width) * 0.05) solid #7C71DB;
+        border: calc(var(--geos-mobile-width) * 0.05) solid #aaa;
         display: grid;
         place-items: center;
         overflow: hidden;
