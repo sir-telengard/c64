@@ -50,7 +50,7 @@
         const actions = [
             ['Keyboard', () => document.querySelector('[aria-label="C64 command input"]').focus({ preventScroll: true })],
             ['Directory', () => { command('LOAD"$",8'); command('LIST'); }],
-            ['Run', () => command('RUN')],
+            ['GEOS', () => command('LOAD"GEOS",8,1')],
             ['Run/Stop', () => send('Escape')]
         ];
         for (const [label, action] of actions) {
