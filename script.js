@@ -1988,6 +1988,8 @@ resetIdleTimer();
         monitor.style.width = width + 'px';
         monitor.style.height = width * 3 / 4 + 'px';
         monitor.style.setProperty('--mobile-scale', width / 1280);
+        controls.style.setProperty('--monitor-bezel', width * 0.05 + 'px');
+        controls.style.setProperty('--monitor-display-height', width * 0.65 + 'px');
         if (document.activeElement?.getAttribute('aria-label') === 'C64 command input') {
             screen.scrollTop = screen.scrollHeight;
         }
