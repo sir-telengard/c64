@@ -151,3 +151,64 @@ body.geos-active > .screen { display: none; }
 .geos-page-footer { box-sizing: content-box; border-top: 1px dotted #111; padding-top: 4px; margin-top: 6px; }
 
 .geos-page-spacer { height: 0; margin: 0; padding: 0; border: 0; }
+
+/* Fixed 4:3 monitor and touch controls; desktop retains its original layout. */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 600px) {
+    body:not(.geos-active) {
+        height: auto;
+        min-height: 100svh;
+        width: 100%;
+        flex-direction: column;
+        justify-content: flex-start;
+        padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+        gap: 12px;
+    }
+    .mobile-monitor { position: relative; flex: none; overflow: hidden; }
+    .mobile-monitor > .screen {
+        position: absolute;
+        inset: 0 auto auto 0;
+        width: 1280px;
+        height: 960px;
+        border-width: 64px;
+        padding: 16px;
+        transform: scale(var(--mobile-scale));
+        transform-origin: top left;
+        overscroll-behavior: contain;
+    }
+    .mobile-monitor .boot-text,
+    .mobile-monitor .ready-line,
+    .mobile-monitor .cursor-line,
+    .mobile-monitor .cursor,
+    .mobile-monitor .easter-egg {
+        font-size: 28px;
+        line-height: 1.4;
+        margin-left: 0;
+    }
+    .mobile-monitor .boot-text { white-space: pre; }
+    .mobile-monitor .ready-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .mobile-monitor .cursor-line { white-space: normal; overflow-wrap: anywhere; }
+    .mobile-monitor .cursor-line > span { white-space: pre-wrap; }
+    .mobile-controls {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+        width: min(100%, 480px);
+        flex: none;
+    }
+    .mobile-controls button {
+        min-height: 44px;
+        border: 2px solid #3e32a2;
+        border-radius: 5px;
+        background: #d7d1f2;
+        color: #24196d;
+        box-shadow: 0 3px 0 #3e32a2;
+        font: bold 12px/1.2 monospace;
+        touch-action: manipulation;
+    }
+    .mobile-controls button:active { transform: translateY(2px); box-shadow: 0 1px 0 #3e32a2; }
+    .mobile-controls button:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+    .mobile-hint { max-width: 100%; color: #24196d; font: 12px/1.5 monospace; text-align: center; }
+    body.geos-active > .mobile-monitor,
+    body.geos-active > .mobile-controls,
+    body.geos-active > .mobile-hint { display: none; }
+}
