@@ -1965,7 +1965,7 @@ resetIdleTimer();
 (() => {
     const mobile = window.matchMedia('(max-width: 767px), (pointer: coarse) and (max-height: 600px)');
     const screen = document.querySelector('.screen');
-    let monitor, controls, hint;
+    let monitor, controls;
     const send = key => document.dispatchEvent(new KeyboardEvent('keydown', { key }));
     const command = text => {
         if (window.GEOS?.active || programRunning) return;
@@ -1992,8 +1992,8 @@ resetIdleTimer();
         if (!mobile.matches) {
             if (monitor) {
                 monitor.replaceWith(screen);
-                controls.remove(); hint.remove();
-                monitor = controls = hint = null;
+                controls.remove();
+                monitor = controls = null;
             }
             return;
         }
@@ -2018,10 +2018,7 @@ resetIdleTimer();
             button.addEventListener('click', action);
             controls.appendChild(button);
         }
-        hint = document.createElement('p');
-        hint.className = 'mobile-hint';
-        hint.textContent = 'Tap the screen to type · Rotate for a larger screen';
-        monitor.after(controls, hint);
+        monitor.after(controls);
         fit();
     };
     mobile.addEventListener('change', update);
