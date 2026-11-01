@@ -1894,3 +1894,69 @@ function addReadyPrompt() {
 }
 
 resetIdleTimer();
+
+// A real editable control is needed to summon phone/tablet keyboards. Keep
+// rendering in the C64 screen, and use native input events for IME keyboards.
+(() => {
+    const screen = document.querySelector('.screen');
+    const keyboard = document.createElement('textarea');
+    keyboard.setAttribute('aria-label', 'C64 command input');
+    keyboard.setAttribute('autocapitalize', 'off');
+    keyboard.setAttribute('autocomplete', 'off');
+    keyboard.setAttribute('autocorrect', 'off');
+    keyboard.setAttribute('inputmode', 'text');
+    keyboard.spellcheck = false;
+    // Editable and focusable (not display:none), without altering the display.
+    Object.assign(keyboard.style, {
+        position: 'fixed', left: '0', bottom: '0', width: '1px',
+        height: '1px', opacity: '0', padding: '0', border: '0',
+        fontSize: '16px', pointerEvents: 'none'
+    });
+    document.body.appendChild(keyboard);
+    const reset = () => {
+        // A sentinel allows soft keyboards to delete even after text is consumed.
+        keyboard.value = ' ';
+        keyboard.setSelectionRange(1, 1);
+    };
+    const send = key => document.dispatchEvent(new KeyboardEvent('keydown', { key }));
+    let composing = false;
+    const consume = () => {
+        if (composing) return;
+        const text = keyboard.value.startsWith(' ') ? keyboard.value.slice(1) : keyboard.value;
+        reset();
+        for (const char of text.replace(/\r\n?/g, '\n')) send(char === '\n' ? 'Enter' : char);
+    };
+    reset();
+    screen.addEventListener('click', event => {
+        if (window.GEOS?.active || event.target.closest('a, button, input, textarea, [contenteditable]')) return;
+        // Focus synchronously within the tap, as required by mobile browsers.
+        keyboard.focus({ preventScroll: true });
+    });
+    keyboard.addEventListener('compositionstart', () => { composing = true; });
+    keyboard.addEventListener('compositionend', () => { composing = false; consume(); });
+    keyboard.addEventListener('input', event => {
+        if (!event.isComposing) consume();
+    });
+    keyboard.addEventListener('beforeinput', event => {
+        if (composing || event.isComposing) return;
+        if (event.inputType === 'deleteContentBackward' || event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
+            event.preventDefault();
+            send(event.inputType === 'deleteContentBackward' ? 'Backspace' : 'Enter');
+            reset();
+        }
+    });
+    keyboard.addEventListener('keydown', event => {
+        // Avoid handling both a hardware key and its resulting input event.
+        event.stopPropagation();
+        if (composing || event.isComposing || event.keyCode === 229) return;
+        if (['Enter', 'Backspace', 'Escape'].includes(event.key) || event.altKey) {
+            event.preventDefault();
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+                key: event.key, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey
+            }));
+            reset();
+        }
+    });
+    // Let native paste reach the textarea, then consume it through input.
+    keyboard.addEventListener('paste', event => event.stopPropagation());
+})();
